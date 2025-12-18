@@ -1,0 +1,927 @@
+import random
+import logging
+from aiogram import Router, F
+from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from database import Database
+from config import *
+from keyboards import (
+    get_main_menu, get_profile_keyboard, get_withdraw_keyboard,
+    get_withdraw_methods_keyboard, get_earn_menu_keyboard,
+    get_chest_keyboard, get_cancel_keyboard
+)
+import asyncio
+
+router = Router()
+db = Database()
+logger = logging.getLogger(__name__)
+
+
+class WithdrawStates(StatesGroup):
+    waiting_amount = State()
+    waiting_wallet = State()
+    confirming_site_withdraw = State()
+    confirming_site_withdraw = State()
+
+
+@router.callback_query(F.data == "daily_bonus")
+async def daily_bonus(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    
+    can_get, next_time = db.can_get_daily_bonus(user_id)
+    
+    if not can_get:
+        # Показываем информацию о следующем бонусе
+        from datetime import datetime, timedelta
+        
+        if next_time:
+            # Вычисляем оставшееся время до следующего бонуса
+            now = datetime.now()
+            next_datetime = datetime.combine(next_time, datetime.min.time())
+            
+            if next_datetime <= now:
+                # Уже наступил новый день, можно получить бонус
+                can_get = True
+            else:
+                # Показываем информацию о следующем бонусе
+                time_left = next_datetime - now
+                hours = int(time_left.total_seconds() // 3600)
+                minutes = int((time_left.total_seconds() % 3600) // 60)
+                
+                # Форматируем дату
+                next_date_str = next_time.strftime("%d.%m.%Y")
+                
+                text = (
+                    f"🎁 Ежедневный бонус\n\n"
+                    f"❌ Бонус уже получен сегодня!\n\n"
+                    f"⏰ Следующий бонус доступен:\n"
+                    f"📅 Дата: {next_date_str}\n"
+                )
+                
+                if hours > 0:
+                    text += f"⏳ Осталось: {hours} ч. {minutes} мин."
+                elif minutes > 0:
+                    text += f"⏳ Осталось: {minutes} мин."
+                else:
+                    text += f"⏳ Осталось: менее минуты"
+                
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_earn_menu")]
+                ])
+                await callback.answer("Бонус уже получен сегодня", show_alert=True)
+                await callback.message.edit_text(text, reply_markup=keyboard)
+                return
+        
+        if not can_get:
+            await callback.answer("Вы уже получили ежедневный бонус сегодня!", show_alert=True)
+            return
+    
+    # Выдаем бонус (получаем значения из настроек)
+    min_bonus = int(db.get_setting('daily_bonus_min', str(DAILY_BONUS_MIN)))
+    max_bonus = int(db.get_setting('daily_bonus_max', str(DAILY_BONUS_MAX)))
+    amount = random.randint(min_bonus, max_bonus)
+    db.set_daily_bonus(user_id, amount)
+    
+    user = db.get_user(user_id)
+    
+    # Вычисляем время следующего бонуса для отображения
+    from datetime import datetime, timedelta
+    tomorrow = (datetime.now() + timedelta(days=1)).date()
+    tomorrow_str = tomorrow.strftime("%d.%m.%Y")
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_earn_menu")]
+    ])
+    await callback.answer(f"Вы получили {amount}R!", show_alert=True)
+    await callback.message.edit_text(
+        f"🎁 Ежедневный бонус\n\n"
+        f"✅ Вы получили: {amount}R\n"
+        f"💰 Ваш баланс: {user.get('balance', 0.0):.2f}R\n\n"
+        f"⏰ Следующий бонус доступен:\n"
+        f"📅 Дата: {tomorrow_str}\n"
+        f"🔄 Обновляется каждый день",
+        reply_markup=keyboard
+    )
+
+
+@router.callback_query(F.data.startswith("task_"))
+async def handle_task(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    task_id = int(callback.data.split("_")[1])
+    
+    task = None
+    tasks = db.get_tasks()
+    for t in tasks:
+        if t['task_id'] == task_id:
+            task = t
+            break
+    
+    if not task:
+        await callback.answer("Задание не найдено!", show_alert=True)
+        return
+    
+    # Для заданий типа 'subscribe' и 'info' не проверяем выполнение - кнопки всегда доступны
+    if task['task_type'] not in ['subscribe', 'info']:
+        if db.is_task_completed(user_id, task_id):
+            await callback.answer("Вы уже выполнили это задание!", show_alert=True)
+            return
+    
+    if task['task_type'] == 'subscribe':
+        # Проверяем, есть ли каналы в настройках
+        channels = db.get_subscribe_channels()
+        
+        if not channels:
+            # Нет каналов в настройках - задание недоступно
+            await callback.answer("Каналы для подписки не настроены. Обратитесь к администратору.", show_alert=True)
+            return
+        
+        # Используем каналы из настроек
+        message_text = db.get_setting('subscribe_message_text', '📢 Подпишитесь на каналы для получения награды!')
+        
+        # Создаем кнопки для каждого канала
+        buttons = []
+        for channel in channels:
+            channel_link = channel.get('channel_link') or f"https://t.me/{channel.get('channel_username', '')}"
+            buttons.append([InlineKeyboardButton(
+                text=f"📢 {channel.get('display_name', channel.get('channel_username', 'Канал'))}",
+                url=channel_link
+            )])
+        
+        buttons.append([InlineKeyboardButton(
+            text="✅ Я подписался, проверить",
+            callback_data=f"check_subscribe_channels_{task_id}"
+        )])
+        buttons.append([InlineKeyboardButton(
+            text="◀️ Назад",
+            callback_data="back_to_earn_menu"
+        )])
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        
+        await callback.message.edit_text(
+            message_text,
+            reply_markup=keyboard
+        )
+        await callback.answer()
+        return
+    
+    elif task['task_type'] == 'info':
+        # Просто показываем информацию, БЕЗ начисления награды и БЕЗ пометки как выполненное
+        # Кнопка должна оставаться видимой
+        # НЕ вызываем db.complete_task() - задание не помечается как выполненное
+        # НЕ начисляем награду
+        # НЕ проверяем реферала
+        
+        # Используем настройку из БД для текста сообщения
+        text = db.get_setting('streams_message_text', task.get('description', task.get('title', '📖 Узнать, как зарабатывать на просмотре трансляций/стримов')))
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_earn_menu")]
+        ])
+        
+        await callback.answer()
+        await callback.message.edit_text(text, reply_markup=keyboard)
+    
+    elif task['task_type'] == 'custom':
+        # Для кастомных заданий
+        # Проверяем реферала перед выполнением
+        # Получаем награды за рефералов из БД
+        referral_reward = float(db.get_setting('referral_reward', '350'))
+        friend_referral_reward = float(db.get_setting('friend_referral_reward', '100'))
+        
+        user = db.get_user(user_id)
+        if user and user['referrer_id']:
+            cursor = db.conn.cursor()
+            cursor.execute(
+                "SELECT COUNT(*) as count FROM completed_tasks WHERE user_id = ?",
+                (user_id,)
+            )
+            completed_before = cursor.fetchone()['count']
+            
+            if completed_before == 0:
+                db.update_user_balance(user['referrer_id'], referral_reward)
+                referrer = db.get_user(user['referrer_id'])
+                if referrer and referrer['referrer_id']:
+                    db.update_user_balance(referrer['referrer_id'], friend_referral_reward)
+        
+        db.complete_task(user_id, task_id)
+        user = db.get_user(user_id)
+        
+        await callback.answer(f"Задание выполнено! Начислено {task['reward']}R", show_alert=True)
+        await callback.message.edit_text(
+            f"✅ {task['title']}\n\n"
+            f"{task['description'] or ''}\n\n"
+            f"Начислено: {task['reward']}R\n"
+            f"Ваш баланс: {user['balance']:.2f}R"
+        )
+
+
+@router.callback_query(F.data.startswith("check_subscribe_") & ~F.data.startswith("check_subscribe_channels_"))
+async def check_subscription(callback: CallbackQuery):
+    """Проверка подписки - перенаправляет на функцию с каналами из БД"""
+    task_id = int(callback.data.split("_")[-1])
+    
+    # Меняем data и вызываем функцию напрямую
+    original_data = callback.data
+    callback.data = f"check_subscribe_channels_{task_id}"
+    
+    try:
+        # Вызываем функцию check_subscribe_channels напрямую
+        await check_subscribe_channels(callback)
+    finally:
+        # Восстанавливаем оригинальный data
+        callback.data = original_data
+
+
+@router.callback_query(F.data == "referral_link")
+async def show_referral_link(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    bot_username = (await callback.bot.get_me()).username
+    referral_link = f"https://t.me/{bot_username}?start={user_id}"
+    
+    # Получаем награды за рефералов из БД
+    referral_reward = int(float(db.get_setting('referral_reward', '350')))
+    friend_referral_reward = int(float(db.get_setting('friend_referral_reward', '100')))
+    
+    text = (
+        f"👥 Пригласите друга и получите {referral_reward}R!\n\n"
+        f"🔗 Ваша реферальная ссылка:\n{referral_link}\n\n"
+        f"💰 За каждого реферала вы получите {referral_reward}R\n"
+        f"💰 За реферала вашего реферала - {friend_referral_reward}R"
+    )
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_earn_menu")]
+    ])
+    
+    await callback.message.edit_text(text, reply_markup=keyboard)
+
+
+@router.callback_query(F.data == "open_chest")
+async def open_chest(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    user = db.get_user(user_id)
+    
+    if user['balance'] < CHEST_COST:
+        await callback.answer("Недостаточно средств!", show_alert=True)
+        return
+    
+    # Списываем стоимость
+    db.update_user_balance(user_id, -CHEST_COST)
+    
+    # Генерируем промокод (пример)
+    promo_code = f"CHEST{random.randint(1000, 9999)}"
+    
+    text = (
+        "🎁 Поздравляем!\n\n"
+        f"Дарим тебе 200FS БЕЗ ДЕПОЗИТА на проекте ... по промокоду {promo_code}"
+    )
+    
+    await callback.message.edit_text(text)
+
+
+@router.callback_query(F.data == "withdraw")
+async def start_withdraw(callback: CallbackQuery):
+    from config import ADMINS
+    user_id = callback.from_user.id
+    user = db.get_user(user_id)
+    balance = user.get('balance', 0.0)
+    is_admin = user_id in ADMINS
+    
+    text = (
+        "💸 Вывод средств\n\n"
+        f"Курс: 10 Rcoin = 1 рубль\n"
+    )
+    
+    if is_admin:
+        text += f"👑 Режим администратора: можно вывести любую сумму\n"
+    else:
+        text += f"Минимальный вывод: 5000 Rcoin\n"
+    
+    text += f"Ваш баланс: {balance:.2f}R"
+    
+    if not is_admin and balance < 5000:
+        text += f"\n\n❌ Недостаточно средств для вывода. Минимум: 5000R"
+    
+    # Для админов всегда показываем кнопку "Далее", для обычных пользователей - только если баланс >= 5000
+    display_balance = balance if not is_admin else max(balance, 5000)  # Для админов всегда >= 5000 для показа кнопки
+    await callback.message.edit_text(text, reply_markup=get_withdraw_keyboard(display_balance))
+
+
+@router.callback_query(F.data == "withdraw_amount")
+async def ask_withdraw_amount(callback: CallbackQuery, state: FSMContext):
+    from config import ADMINS
+    user_id = callback.from_user.id
+    is_admin = user_id in ADMINS
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_withdraw_start")]
+    ])
+    
+    text = "💸 Введите сумму для вывода (в Rcoin):"
+    if is_admin:
+        text += "\n👑 Режим администратора: можно вывести любую сумму"
+    else:
+        text += f"\nМинимум: 5000R"
+    
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await state.set_state(WithdrawStates.waiting_amount)
+
+
+@router.message(WithdrawStates.waiting_amount)
+async def process_withdraw_amount(message: Message, state: FSMContext):
+    from config import ADMINS
+    user_id = message.from_user.id
+    user = db.get_user(user_id)
+    is_admin = user_id in ADMINS
+    
+    try:
+        amount = float(message.text)
+        
+        # Для админов нет ограничений по минимальной сумме
+        if not is_admin and amount < MIN_WITHDRAW:
+            await message.answer(f"Минимальная сумма вывода: {MIN_WITHDRAW}R")
+            return
+        
+        # Для админов нет ограничений по балансу
+        if not is_admin and amount > user['balance']:
+            await message.answer("Недостаточно средств на балансе!")
+            return
+        
+        await state.update_data(amount=amount)
+        await message.answer(
+            "💸 Выберите способ вывода:",
+            reply_markup=get_withdraw_methods_keyboard()
+        )
+    except ValueError:
+        await message.answer("Пожалуйста, введите число!")
+
+
+@router.callback_query(F.data == "withdraw_site")
+async def withdraw_to_site(callback: CallbackQuery, state: FSMContext):
+    from config import ADMINS, COIN_TO_RUB
+    data = await state.get_data()
+    amount = data.get('amount')
+    
+    if not amount:
+        await callback.answer("Ошибка: сумма не указана", show_alert=True)
+        return
+    
+    user_id = callback.from_user.id
+    user = db.get_user(user_id)
+    is_admin = user_id in ADMINS
+    
+    # Для админов нет ограничений по балансу
+    if not is_admin and amount > user['balance']:
+        await callback.answer("Недостаточно средств!", show_alert=True)
+        return
+    
+    # Вычисляем сумму в рублях
+    rub_amount = amount / COIN_TO_RUB
+    
+    # Получаем текст подтверждения из настроек
+    confirmation_text = db.get_setting('withdraw_site_confirmation_text', 
+        '💸 Подтвердите вывод\n\nСумма: {amount:.0f} Rcoin\n\n📌 Пример: 5000 Rcoin = 1000 рублей на балансе\n\nПодтверждаете вывод?')
+    
+    # Подставляем сумму в текст
+    try:
+        text = confirmation_text.format(amount=amount)
+    except:
+        # Если ошибка форматирования, используем базовый текст
+        text = f"💸 Подтвердите вывод\n\nСумма: {amount:.0f} Rcoin\n\n📌 Пример: 5000 Rcoin = 1000 рублей на балансе\n\nПодтверждаете вывод?"
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Подтвердить", callback_data="confirm_site_withdraw")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_withdraw_methods")]
+    ])
+    
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await state.set_state(WithdrawStates.confirming_site_withdraw)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "confirm_site_withdraw")
+async def confirm_site_withdraw(callback: CallbackQuery, state: FSMContext):
+    from config import ADMINS, COIN_TO_RUB
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    data = await state.get_data()
+    amount = data.get('amount')
+    
+    if not amount:
+        await callback.answer("Ошибка: сумма не указана", show_alert=True)
+        return
+    
+    user_id = callback.from_user.id
+    user = db.get_user(user_id)
+    is_admin = user_id in ADMINS
+    
+    # Для админов нет ограничений по балансу
+    if not is_admin and amount > user['balance']:
+        await callback.answer("Недостаточно средств!", show_alert=True)
+        return
+    
+    # Генерируем промокод
+    promo_code = f"WITHDRAW{random.randint(10000, 99999)}"
+    
+    # Создаем заявку на вывод (баланс списывается внутри create_withdrawal)
+    withdrawal_id = db.create_withdrawal(user_id, amount, "site", promo_code)
+    
+    # Отправляем в канал
+    from config import WITHDRAWAL_CHANNEL_ID
+    try:
+        username = user.get('username', 'N/A')
+        if username == 'N/A':
+            username_text = f"ID: {user_id}"
+        else:
+            username_text = f"@{username}"
+        
+        message_text = (
+            f"💸 Новая заявка на вывод\n\n"
+            f"Пользователь: {username_text}\n"
+            f"Сумма: {amount:.0f}R\n"
+            f"Способ: Вывод на баланс сайта"
+        )
+        
+        logger.info(f"Попытка отправить уведомление в канал {WITHDRAWAL_CHANNEL_ID}")
+        await callback.bot.send_message(
+            chat_id=WITHDRAWAL_CHANNEL_ID,
+            text=message_text
+        )
+        logger.info(f"Уведомление успешно отправлено в канал")
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Ошибка при отправке уведомления в канал {WITHDRAWAL_CHANNEL_ID}: {error_msg}", exc_info=True)
+        # Также отправляем админу для отладки
+        try:
+            await callback.bot.send_message(
+                ADMINS[0],
+                f"⚠️ Ошибка отправки в канал:\n{error_msg}\n\nПроверьте, что бот добавлен в канал как администратор."
+            )
+        except:
+            pass
+    
+    # Получаем обновленный баланс
+    user = db.get_user(user_id)
+    
+    # Получаем текст успешного вывода из настроек
+    success_text = db.get_setting('withdraw_site_success_text', 
+        '✅ Заявка на вывод создана!\n\n⏳ Ожидайте исполнения заявки.')
+    
+    # Получаем ссылку на сайт из настроек
+    site_link = db.get_setting('withdraw_site_link', 'https://example.com')
+    
+    await callback.message.edit_text(
+        success_text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔗 Ссылка на сайт", url=site_link)]
+        ])
+    )
+    
+    await state.clear()
+    await callback.answer()
+
+
+@router.callback_query(F.data == "withdraw_usdt")
+async def ask_usdt_wallet(callback: CallbackQuery, state: FSMContext):
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_withdraw_methods")]
+    ])
+    await callback.message.edit_text(
+        "💎 Вывод на USDT (BEP20)\n\n"
+        "Комиссия: 3$\n\n"
+        "Укажите свой кошелек в формате:\n"
+        "0x29E5413420cd856aD2409484BfB600e65c96F777",
+        reply_markup=keyboard
+    )
+    await state.set_state(WithdrawStates.waiting_wallet)
+
+
+@router.message(WithdrawStates.waiting_wallet)
+async def process_usdt_withdraw(message: Message, state: FSMContext):
+    from config import ADMINS
+    user_id = message.from_user.id
+    wallet = message.text.strip()
+    is_admin = user_id in ADMINS
+    
+    # Простая проверка формата кошелька
+    if not wallet.startswith("0x") or len(wallet) != 42:
+        await message.answer("Неверный формат кошелька! Используйте формат BEP20 (0x...)")
+        return
+    
+    data = await state.get_data()
+    amount = data.get('amount')
+    
+    if not amount:
+        await message.answer("Ошибка: сумма не указана")
+        return
+    
+    user = db.get_user(user_id)
+    
+    # Для админов нет ограничений по балансу
+    if not is_admin and amount > user['balance']:
+        await message.answer("Недостаточно средств на балансе!")
+        return
+    
+    # Создаем заявку на вывод (баланс списывается внутри create_withdrawal)
+    withdrawal_id = db.create_withdrawal(user_id, amount, "usdt", wallet)
+    
+    # Отправляем в канал
+    from config import WITHDRAWAL_CHANNEL_ID, ADMINS
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        username = user.get('username', 'N/A')
+        if username == 'N/A':
+            username_text = f"ID: {user_id}"
+        else:
+            username_text = f"@{username}"
+        
+        message_text = (
+            f"💸 Новая заявка на вывод\n\n"
+            f"Пользователь: {username_text}\n"
+            f"Сумма: {amount:.0f}R\n"
+            f"Способ: USDT (BEP20)\n"
+            f"Кошелек: {wallet}"
+        )
+        
+        logger.info(f"Попытка отправить уведомление в канал {WITHDRAWAL_CHANNEL_ID}")
+        await message.bot.send_message(
+            chat_id=WITHDRAWAL_CHANNEL_ID,
+            text=message_text
+        )
+        logger.info(f"Уведомление успешно отправлено в канал")
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Ошибка при отправке уведомления в канал {WITHDRAWAL_CHANNEL_ID}: {error_msg}", exc_info=True)
+        # Также отправляем админу для отладки
+        try:
+            await message.bot.send_message(
+                ADMINS[0],
+                f"⚠️ Ошибка отправки в канал:\n{error_msg}\n\nПроверьте, что бот добавлен в канал как администратор."
+            )
+        except:
+            pass
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Назад в профиль", callback_data="back_to_profile")]
+    ])
+    
+    await message.answer(
+        f"✅ Заявка на вывод создана!\n\n"
+        f"⏳ Ожидайте исполнения заявки.",
+        reply_markup=keyboard
+    )
+    
+    await state.clear()
+
+
+@router.callback_query(F.data == "back_to_profile")
+async def back_to_profile(callback: CallbackQuery, state: FSMContext):
+    """Возврат к профилю из процесса вывода"""
+    await state.clear()
+    user_id = callback.from_user.id
+    user = db.get_user(user_id)
+    
+    referrer_id = user.get('referrer_id')
+    referrer_name = "Нет"
+    if referrer_id:
+        referrer = db.get_user(referrer_id)
+        if referrer:
+            referrer_name = f"@{referrer.get('username', '')}" if referrer.get('username') else f"ID: {referrer_id}"
+    
+    invited_count = db.get_invited_count(user_id)
+    
+    profile_text = (
+        f"👤 Личный кабинет\n\n"
+        f"📝 Имя: {user.get('first_name', '')}\n"
+        f"🆔 ID: {user_id}\n"
+        f"📭 На вывод: {user.get('balance', 0.0):.2f}R\n"
+        f"📤 Вывел: {user.get('withdrawn', 0.0):.2f}R\n"
+        f"👥 Вас привел: {referrer_name}\n"
+        f"💸 Вы пригласили: {invited_count}\n"
+    )
+    
+    from keyboards import get_profile_keyboard
+    balance = user.get('balance', 0.0)
+    await callback.message.edit_text(profile_text, reply_markup=get_profile_keyboard(balance))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "back_to_withdraw_start")
+async def back_to_withdraw_start(callback: CallbackQuery, state: FSMContext):
+    """Возврат к началу процесса вывода"""
+    from config import ADMINS
+    await state.clear()
+    user_id = callback.from_user.id
+    user = db.get_user(user_id)
+    balance = user.get('balance', 0.0)
+    is_admin = user_id in ADMINS
+    
+    text = (
+        "💸 Вывод средств\n\n"
+        f"Курс: 10 Rcoin = 1 рубль\n"
+    )
+    
+    if is_admin:
+        text += f"👑 Режим администратора: можно вывести любую сумму\n"
+    else:
+        text += f"Минимальный вывод: 5000 Rcoin\n"
+    
+    text += f"Ваш баланс: {balance:.2f}R"
+    
+    if not is_admin and balance < 5000:
+        text += f"\n\n❌ Недостаточно средств для вывода. Минимум: 5000R"
+    
+    # Для админов всегда показываем кнопку "Далее"
+    display_balance = balance if not is_admin else max(balance, 5000)
+    await callback.message.edit_text(text, reply_markup=get_withdraw_keyboard(display_balance))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "back_to_withdraw_methods")
+async def back_to_withdraw_methods(callback: CallbackQuery, state: FSMContext):
+    """Возврат к выбору способа вывода"""
+    data = await state.get_data()
+    amount = data.get('amount')
+    
+    if not amount:
+        await callback.answer("Ошибка: сумма не указана", show_alert=True)
+        return
+    
+    await callback.message.edit_text(
+        "💸 Выберите способ вывода:",
+        reply_markup=get_withdraw_methods_keyboard()
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "back_to_earn_menu")
+async def back_to_earn_menu(callback: CallbackQuery):
+    """Возврат в меню заработка"""
+    user_id = callback.from_user.id
+    keyboard = get_earn_menu_keyboard(user_id)
+    
+    await callback.message.edit_text(
+        "💰 Выберите способ заработка:",
+        reply_markup=keyboard
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("check_subscribe_channels_"))
+async def check_subscribe_channels(callback: CallbackQuery):
+    """Проверка подписки на все каналы из настроек"""
+    user_id = callback.from_user.id
+    task_id = int(callback.data.split("_")[-1])
+    
+    logger.info("=" * 80)
+    logger.info(f"🚀 НАЧАЛО ПРОВЕРКИ ПОДПИСКИ: user_id={user_id}, task_id={task_id}")
+    logger.info("=" * 80)
+    
+    # Проверяем и создаем пользователя, если его нет
+    user = db.get_user(user_id)
+    if not user:
+        username = callback.from_user.username or ""
+        first_name = callback.from_user.first_name or ""
+        db.create_user(user_id, username, first_name, None)
+        user = db.get_user(user_id)
+        if not user:
+            await callback.answer("Ошибка: не удалось создать пользователя", show_alert=True)
+            return
+    
+    channels = db.get_subscribe_channels()
+    
+    if not channels:
+        await callback.answer("Каналы не настроены", show_alert=True)
+        return
+    
+    # Получаем задание для награды
+    task = None
+    tasks = db.get_tasks()
+    for t in tasks:
+        if t['task_id'] == task_id:
+            task = t
+            break
+    
+    if not task:
+        await callback.answer("Задание не найдено!", show_alert=True)
+        return
+    
+    subscribed_all = True
+    not_subscribed = []
+    total_channels = len(channels)
+    
+    if total_channels == 0:
+        await callback.answer("Каналы не настроены", show_alert=True)
+        return
+    
+    logger.info(f"🔍 Начинаем проверку {total_channels} каналов для пользователя {user_id}")
+    
+    # Проверяем ВСЕ каналы (только открытые каналы через username)
+    for channel in channels:
+        channel_username = channel.get('channel_username')
+        channel_link = channel.get('channel_link', '')
+        display_name = channel.get('display_name', channel_username or 'Канал')
+        
+        is_subscribed = False
+        
+        # Проверяем только через username (для открытых каналов)
+        if channel_username:
+            try:
+                member = await callback.bot.get_chat_member(f"@{channel_username}", user_id)
+                if member.status in ['member', 'administrator', 'creator']:
+                    is_subscribed = True
+                else:
+                    is_subscribed = False
+            except Exception as e:
+                error_msg = str(e).lower()
+                logger.error(f"Ошибка при проверке подписки на канал @{channel_username}: {e}")
+                # Если бот не может проверить подписку - отправляем ошибку и останавливаем проверку
+                if "member list is inaccessible" in error_msg:
+                    await callback.answer(
+                        f"Ошибка: Бот не может проверить подписку на канал @{channel_username}.\n"
+                        f"Убедитесь, что бот добавлен в канал как администратор с правами на просмотр участников.\n"
+                        f"Если канал закрыт, проверка подписки невозможна.",
+                        show_alert=True
+                    )
+                    return
+                elif "chat not found" in error_msg or "bot is not a member" in error_msg:
+                    await callback.answer(
+                        f"Ошибка: Бот не добавлен в канал @{channel_username} как администратор!",
+                        show_alert=True
+                    )
+                    return
+                else:
+                    # Другие ошибки - отправляем общую ошибку
+                    await callback.answer(
+                        f"Ошибка при проверке подписки на канал @{channel_username}. Попробуйте позже.",
+                        show_alert=True
+                    )
+                    return
+        
+        # Если канал не подписан - добавляем в список неподписанных
+        if not is_subscribed:
+            subscribed_all = False
+            not_subscribed.append(display_name)
+    
+    # ФИНАЛЬНАЯ ПРОВЕРКА: если есть хотя бы один неподписанный канал - subscribed_all = False
+    if not_subscribed:
+        subscribed_all = False
+        logger.error(f"🚨 ФИНАЛЬНАЯ ПРОВЕРКА: subscribed_all установлен в False из-за неподписанных каналов")
+    
+    logger.info(f"🔍 ИТОГОВЫЙ РЕЗУЛЬТАТ проверки подписки для пользователя {user_id}:")
+    logger.info(f"   → subscribed_all = {subscribed_all}")
+    logger.info(f"   → Всего каналов: {total_channels}")
+    logger.info(f"   → Неподписанных каналов: {len(not_subscribed)}")
+    
+    if not_subscribed:
+        logger.error(f"❌ СПИСОК НЕПОДПИСАННЫХ КАНАЛОВ: {', '.join(not_subscribed)}")
+    
+    # КРИТИЧЕСКАЯ ПРОВЕРКА: если subscribed_all = True, но есть неподписанные каналы - это ошибка!
+    if subscribed_all and not_subscribed:
+        logger.error(f"🚨 КРИТИЧЕСКАЯ ОШИБКА ЛОГИКИ: subscribed_all=True, но есть неподписанные каналы: {not_subscribed}")
+        subscribed_all = False
+        logger.error(f"🚨 subscribed_all принудительно установлен в False")
+    
+    if subscribed_all:
+        # Все каналы подписаны - проверяем, получал ли уже награду за этот набор каналов
+        channels_hash = db.get_channels_hash()
+        
+        # Проверяем, получал ли пользователь уже награду за этот набор каналов
+        if db.has_received_reward_for_channels(user_id, channels_hash):
+            # Уже получал награду - НЕ отправляем сообщение о начислении
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_earn_menu")]
+            ])
+            await callback.answer("Вы уже получили награду за этот набор каналов", show_alert=True)
+            await callback.message.edit_text(
+                "Вы уже получили на баланс. Ожидайте следующее обновление списка каналов.",
+                reply_markup=keyboard
+            )
+            return
+        
+        # Все каналы подписаны и награда еще не получена - начисляем награду
+        # Получаем награды за рефералов из БД
+        referral_reward = float(db.get_setting('referral_reward', '350'))
+        friend_referral_reward = float(db.get_setting('friend_referral_reward', '100'))
+        
+        reward_amount = float(task.get('reward', 0.0))
+        if reward_amount <= 0:
+            await callback.answer("Ошибка: награда задания не указана", show_alert=True)
+            return
+        
+        # Начисляем награду - ПРОСТО И ПРЯМО
+        cursor = db.conn.cursor()
+        
+        # Создаем пользователя если нет
+        cursor.execute("""
+            INSERT OR IGNORE INTO users (user_id, username, first_name, balance)
+            VALUES (?, ?, ?, 0.0)
+        """, (user_id, callback.from_user.username or "", callback.from_user.first_name or ""))
+        
+        # ОБНОВЛЯЕМ БАЛАНС
+        cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (reward_amount, user_id))
+        
+        # КОММИТИМ СРАЗУ
+        db.conn.commit()
+        
+        # Если не обновилось - ошибка
+        if cursor.rowcount == 0:
+            await callback.answer("Ошибка: не удалось обновить баланс", show_alert=True)
+            return
+        
+        # ПРОВЕРЯЕМ БАЛАНС СРАЗУ ПОСЛЕ COMMIT
+        cursor.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
+        check_row = cursor.fetchone()
+        if not check_row:
+            await callback.answer("Ошибка: пользователь не найден", show_alert=True)
+            return
+        
+        # Отмечаем награду
+        db.mark_reward_received(user_id, channels_hash)
+        
+        # Сохраняем подписки - используем ссылку (link)
+        for channel in channels:
+            channel_link = channel.get('channel_link', '')
+            
+            # Если нет ссылки, формируем из username
+            if not channel_link:
+                channel_username = channel.get('channel_username', '')
+                if channel_username:
+                    channel_link = f"https://t.me/{channel_username.replace('@', '')}"
+                else:
+                    continue  # Пропускаем если нет ни ссылки ни username
+            
+            # Сохраняем подписку по ссылке
+            db.add_subscription(user_id, channel_link)
+        
+        # Рефералы - используем значения из БД
+        user = db.get_user(user_id)
+        if user and user.get('referrer_id'):
+            cursor.execute("SELECT COUNT(*) as count FROM completed_tasks WHERE user_id = ? AND task_id != ?", (user_id, task_id))
+            if cursor.fetchone()['count'] == 0:
+                db.update_user_balance(user['referrer_id'], referral_reward)
+                referrer = db.get_user(user['referrer_id'])
+                if referrer and referrer.get('referrer_id'):
+                    db.update_user_balance(referrer['referrer_id'], friend_referral_reward)
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_earn_menu")]
+        ])
+        
+        await callback.answer(f"✅ Подписка подтверждена! Начислено {reward_amount}R", show_alert=True)
+        await callback.message.edit_text(f"Начислено: {reward_amount}R", reply_markup=keyboard)
+    else:
+        # Не все каналы подписаны
+        not_subscribed_text = "\n".join([f"• {name}" for name in not_subscribed])
+        await callback.answer("❌ Вы еще не подписались на все каналы!", show_alert=True)
+        
+        # Показываем каналы снова
+        message_text = db.get_setting('subscribe_message_text', '📢 Подпишитесь на каналы для получения награды!')
+        buttons = []
+        for channel in channels:
+            channel_link = channel.get('channel_link') or f"https://t.me/{channel.get('channel_username', '')}"
+            buttons.append([InlineKeyboardButton(
+                text=f"📢 {channel.get('display_name', channel.get('channel_username', 'Канал'))}",
+                url=channel_link
+            )])
+        
+        buttons.append([InlineKeyboardButton(
+            text="✅ Я подписался, проверить",
+            callback_data=f"check_subscribe_channels_{task_id}"
+        )])
+        buttons.append([InlineKeyboardButton(
+            text="◀️ Назад",
+            callback_data="back_to_earn_menu"
+        )])
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        
+        await callback.message.edit_text(
+            "❌ Подписка не подтверждена!",
+            reply_markup=keyboard
+        )
+
+
+@router.callback_query(F.data == "back_to_main_menu")
+async def back_to_main_menu(callback: CallbackQuery):
+    """Возврат в главное меню"""
+    from keyboards import get_main_menu
+    
+    text = "👋 Добро пожаловать! Это бот для заработка Rcoin через выполнение заданий.\n\nВыберите действие в меню:"
+    
+    # Удаляем старое сообщение и отправляем новое с главным меню
+    try:
+        await callback.message.delete()
+    except:
+        pass
+    
+    await callback.message.answer(text, reply_markup=get_main_menu())
+    await callback.answer()
+
+
+
