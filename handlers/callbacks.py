@@ -859,9 +859,8 @@ async def check_subscribe_channels(callback: CallbackQuery):
 async def back_to_main_menu(callback: CallbackQuery):
     """Возврат в главное меню"""
     from keyboards import get_main_menu
-    from database import Database
     
-    db = Database()
+    # Используем глобальный экземпляр БД, а не создаем новый
     text = db.get_setting(
         'welcome_text',
         "👋 Добро пожаловать!\n\nЭто бот для заработка Rcoin через выполнение заданий.\n\nВыберите действие в меню:"
