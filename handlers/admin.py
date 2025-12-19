@@ -35,6 +35,7 @@ class AdminStates(StatesGroup):
     waiting_streams_message_text = State()
     waiting_referral_reward = State()
     waiting_friend_referral_reward = State()
+    waiting_subscribe_reward = State()
     waiting_welcome_text = State()
     waiting_stats_base_users = State()
     waiting_stats_bot_created = State()

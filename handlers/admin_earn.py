@@ -42,6 +42,7 @@ def get_daily_bonus_settings_keyboard():
 def get_subscribe_settings_keyboard():
     """Меню настроек подписки на каналы"""
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💰 Изменить награду за канал", callback_data="admin_edit_subscribe_reward")],
         [InlineKeyboardButton(text="✏️ Изменить текст кнопки", callback_data="admin_edit_subscribe_button")],
         [InlineKeyboardButton(text="✏️ Изменить текст сообщения", callback_data="admin_edit_subscribe_message")],
         [InlineKeyboardButton(text="➕ Добавить канал", callback_data="admin_add_subscribe_channel")],
@@ -242,6 +243,50 @@ async def admin_save_subscribe_message(message: Message, state: FSMContext):
         reply_markup=get_subscribe_settings_keyboard()
     )
     await state.clear()
+
+
+@router.callback_query(F.data == "admin_edit_subscribe_reward")
+async def admin_edit_subscribe_reward(callback: CallbackQuery, state: FSMContext):
+    """Редактирование награды за подписку на один канал"""
+    db = get_db()
+    current_reward = db.get_setting('subscribe_reward', '100')
+    
+    await callback.message.edit_text(
+        "💰 Изменение награды за подписку на один канал\n\n"
+        f"Текущая награда: {current_reward}R за один канал\n\n"
+        "Отправьте новое значение (только число):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_subscribe_settings")]
+        ])
+    )
+    await state.set_state(AdminStates.waiting_subscribe_reward)
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_subscribe_reward)
+async def admin_save_subscribe_reward(message: Message, state: FSMContext):
+    """Сохранение награды за подписку на один канал"""
+    if message.from_user.id not in ADMINS:
+        await state.clear()
+        return
+    
+    try:
+        reward_value = int(message.text.strip())
+        if reward_value < 0:
+            await message.answer("❌ Значение должно быть больше или равно 0")
+            return
+        
+        db = get_db()
+        db.set_setting('subscribe_reward', str(reward_value))
+        
+        await message.answer(
+            f"✅ Награда за подписку на один канал установлена: {reward_value}R\n\n"
+            f"Пример: если пользователь подпишется на 2 канала, он получит {reward_value * 2}R",
+            reply_markup=get_subscribe_settings_keyboard()
+        )
+        await state.clear()
+    except ValueError:
+        await message.answer("❌ Пожалуйста, отправьте число")
 
 
 @router.callback_query(F.data == "admin_add_subscribe_channel")

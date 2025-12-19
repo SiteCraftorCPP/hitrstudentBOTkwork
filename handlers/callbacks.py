@@ -711,8 +711,6 @@ async def check_subscribe_channels(callback: CallbackQuery):
         await callback.answer("Задание не найдено!", show_alert=True)
         return
     
-    subscribed_all = True
-    not_subscribed = []
     total_channels = len(channels)
     
     if total_channels == 0:
@@ -721,31 +719,51 @@ async def check_subscribe_channels(callback: CallbackQuery):
     
     logger.info(f"🔍 Начинаем проверку {total_channels} каналов для пользователя {user_id}")
     
-    # Проверяем ВСЕ каналы (только открытые каналы через username)
+    # НОВАЯ ЛОГИКА: начисляем за каждый подписанный канал отдельно
+    from config import SUBSCRIBE_REWARD
+    
+    # Получаем награду за один канал (из настроек или из config)
+    reward_per_channel = float(db.get_setting('subscribe_reward', str(SUBSCRIBE_REWARD)))
+    
+    cursor = db.conn.cursor()
+    
+    # Создаем пользователя если нет
+    cursor.execute("""
+        INSERT OR IGNORE INTO users (user_id, username, first_name, balance)
+        VALUES (?, ?, ?, 0.0)
+    """, (user_id, callback.from_user.username or "", callback.from_user.first_name or ""))
+    
+    # Проверяем каждый канал отдельно и начисляем за те, за которые еще не начисляли
+    total_reward = 0.0
+    new_channels_count = 0
+    already_rewarded_channels = []
+    error_channels = []
+    
     for channel in channels:
+        channel_id = channel.get('id')
         channel_username = channel.get('channel_username')
         channel_link = channel.get('channel_link', '')
         display_name = channel.get('display_name', channel_username or 'Канал')
         
-        is_subscribed = False
+        if not channel_id:
+            continue
         
-        # Проверяем только через username (для открытых каналов)
+        # Проверяем подписку на этот канал
+        is_subscribed = False
         if channel_username:
             try:
                 member = await callback.bot.get_chat_member(f"@{channel_username}", user_id)
                 if member.status in ['member', 'administrator', 'creator']:
                     is_subscribed = True
-                else:
-                    is_subscribed = False
             except Exception as e:
                 error_msg = str(e).lower()
                 logger.error(f"Ошибка при проверке подписки на канал @{channel_username}: {e}")
-                # Если бот не может проверить подписку - отправляем ошибку и останавливаем проверку
+                
+                # Если критическая ошибка - останавливаем проверку
                 if "member list is inaccessible" in error_msg:
                     await callback.answer(
                         f"Ошибка: Бот не может проверить подписку на канал @{channel_username}.\n"
-                        f"Убедитесь, что бот добавлен в канал как администратор с правами на просмотр участников.\n"
-                        f"Если канал закрыт, проверка подписки невозможна.",
+                        f"Убедитесь, что бот добавлен в канал как администратор с правами на просмотр участников.",
                         show_alert=True
                     )
                     return
@@ -756,155 +774,68 @@ async def check_subscribe_channels(callback: CallbackQuery):
                     )
                     return
                 else:
-                    # Другие ошибки - отправляем общую ошибку
-                    await callback.answer(
-                        f"Ошибка при проверке подписки на канал @{channel_username}. Попробуйте позже.",
-                        show_alert=True
-                    )
-                    return
+                    # Другие ошибки - пропускаем этот канал
+                    error_channels.append(display_name)
+                    continue
         
-        # Если канал не подписан - добавляем в список неподписанных
-        if not is_subscribed:
-            subscribed_all = False
-            not_subscribed.append(display_name)
+        # Если подписан и еще не получал награду за этот канал - начисляем
+        if is_subscribed:
+            if not db.has_received_reward_for_channel(user_id, channel_id):
+                # Начисляем за этот канал
+                cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (reward_per_channel, user_id))
+                total_reward += reward_per_channel
+                new_channels_count += 1
+                
+                # Отмечаем, что награда получена за этот канал
+                db.mark_reward_received_for_channel(user_id, channel_id)
+                
+                # Сохраняем подписку
+                if not channel_link:
+                    if channel_username:
+                        channel_link = f"https://t.me/{channel_username.replace('@', '')}"
+                
+                if channel_link:
+                    db.add_subscription(user_id, channel_link)
+            else:
+                already_rewarded_channels.append(display_name)
     
-    # ФИНАЛЬНАЯ ПРОВЕРКА: если есть хотя бы один неподписанный канал - subscribed_all = False
-    if not_subscribed:
-        subscribed_all = False
-        logger.error(f"🚨 ФИНАЛЬНАЯ ПРОВЕРКА: subscribed_all установлен в False из-за неподписанных каналов")
+    # Коммитим все изменения
+    db.conn.commit()
     
-    logger.info(f"🔍 ИТОГОВЫЙ РЕЗУЛЬТАТ проверки подписки для пользователя {user_id}:")
-    logger.info(f"   → subscribed_all = {subscribed_all}")
-    logger.info(f"   → Всего каналов: {total_channels}")
-    logger.info(f"   → Неподписанных каналов: {len(not_subscribed)}")
-    
-    if not_subscribed:
-        logger.error(f"❌ СПИСОК НЕПОДПИСАННЫХ КАНАЛОВ: {', '.join(not_subscribed)}")
-    
-    # КРИТИЧЕСКАЯ ПРОВЕРКА: если subscribed_all = True, но есть неподписанные каналы - это ошибка!
-    if subscribed_all and not_subscribed:
-        logger.error(f"🚨 КРИТИЧЕСКАЯ ОШИБКА ЛОГИКИ: subscribed_all=True, но есть неподписанные каналы: {not_subscribed}")
-        subscribed_all = False
-        logger.error(f"🚨 subscribed_all принудительно установлен в False")
-    
-    if subscribed_all:
-        # Все каналы подписаны - проверяем, получал ли уже награду за этот набор каналов
-        channels_hash = db.get_channels_hash()
-        
-        # Проверяем, получал ли пользователь уже награду за этот набор каналов
-        if db.has_received_reward_for_channels(user_id, channels_hash):
-            # Уже получал награду - НЕ отправляем сообщение о начислении
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_earn_menu")]
-            ])
-            await callback.answer("Вы уже получили награду за этот набор каналов", show_alert=True)
-            await callback.message.edit_text(
-                "Вы уже получили на баланс. Ожидайте следующее обновление списка каналов.",
-                reply_markup=keyboard
-            )
-            return
-        
-        # Все каналы подписаны и награда еще не получена - начисляем награду
-        # Получаем награды за рефералов из БД
+    # Рефералы - начисляем только если это первое задание пользователя
+    user = db.get_user(user_id)
+    if user and user.get('referrer_id') and new_channels_count > 0:
         referral_reward = float(db.get_setting('referral_reward', '350'))
         friend_referral_reward = float(db.get_setting('friend_referral_reward', '100'))
         
-        reward_amount = float(task.get('reward', 0.0))
-        if reward_amount <= 0:
-            await callback.answer("Ошибка: награда задания не указана", show_alert=True)
-            return
-        
-        # Начисляем награду - ПРОСТО И ПРЯМО
-        cursor = db.conn.cursor()
-        
-        # Создаем пользователя если нет
-        cursor.execute("""
-            INSERT OR IGNORE INTO users (user_id, username, first_name, balance)
-            VALUES (?, ?, ?, 0.0)
-        """, (user_id, callback.from_user.username or "", callback.from_user.first_name or ""))
-        
-        # ОБНОВЛЯЕМ БАЛАНС
-        cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (reward_amount, user_id))
-        
-        # КОММИТИМ СРАЗУ
-        db.conn.commit()
-        
-        # Если не обновилось - ошибка
-        if cursor.rowcount == 0:
-            await callback.answer("Ошибка: не удалось обновить баланс", show_alert=True)
-            return
-        
-        # ПРОВЕРЯЕМ БАЛАНС СРАЗУ ПОСЛЕ COMMIT
-        cursor.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
-        check_row = cursor.fetchone()
-        if not check_row:
-            await callback.answer("Ошибка: пользователь не найден", show_alert=True)
-            return
-        
-        # Отмечаем награду
-        db.mark_reward_received(user_id, channels_hash)
-        
-        # Сохраняем подписки - используем ссылку (link)
-        for channel in channels:
-            channel_link = channel.get('channel_link', '')
-            
-            # Если нет ссылки, формируем из username
-            if not channel_link:
-                channel_username = channel.get('channel_username', '')
-                if channel_username:
-                    channel_link = f"https://t.me/{channel_username.replace('@', '')}"
-                else:
-                    continue  # Пропускаем если нет ни ссылки ни username
-            
-            # Сохраняем подписку по ссылке
-            db.add_subscription(user_id, channel_link)
-        
-        # Рефералы - используем значения из БД
-        user = db.get_user(user_id)
-        if user and user.get('referrer_id'):
-            cursor.execute("SELECT COUNT(*) as count FROM completed_tasks WHERE user_id = ? AND task_id != ?", (user_id, task_id))
-            if cursor.fetchone()['count'] == 0:
-                db.update_user_balance(user['referrer_id'], referral_reward)
-                referrer = db.get_user(user['referrer_id'])
-                if referrer and referrer.get('referrer_id'):
-                    db.update_user_balance(referrer['referrer_id'], friend_referral_reward)
-        
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_earn_menu")]
-        ])
-        
-        await callback.answer(f"✅ Подписка подтверждена! Начислено {reward_amount}R", show_alert=True)
-        await callback.message.edit_text(f"Начислено: {reward_amount}R", reply_markup=keyboard)
+        cursor.execute("SELECT COUNT(*) as count FROM completed_tasks WHERE user_id = ? AND task_id != ?", (user_id, task_id))
+        if cursor.fetchone()['count'] == 0:
+            db.update_user_balance(user['referrer_id'], referral_reward)
+            referrer = db.get_user(user['referrer_id'])
+            if referrer and referrer.get('referrer_id'):
+                db.update_user_balance(referrer['referrer_id'], friend_referral_reward)
+    
+    # Формируем ответ
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_earn_menu")]
+    ])
+    
+    if new_channels_count > 0:
+        message_text = f"✅ Начислено: {total_reward:.0f}R за {new_channels_count} канал(ов)"
+        if already_rewarded_channels:
+            message_text += f"\n\nВы уже получили награду за:\n" + "\n".join([f"• {name}" for name in already_rewarded_channels])
+        await callback.answer(f"✅ Начислено {total_reward:.0f}R за {new_channels_count} канал(ов)!", show_alert=True)
     else:
-        # Не все каналы подписаны
-        not_subscribed_text = "\n".join([f"• {name}" for name in not_subscribed])
-        await callback.answer("❌ Вы еще не подписались на все каналы!", show_alert=True)
-        
-        # Показываем каналы снова
-        message_text = db.get_setting('subscribe_message_text', '📢 Подпишитесь на каналы для получения награды!')
-        buttons = []
-        for channel in channels:
-            channel_link = channel.get('channel_link') or f"https://t.me/{channel.get('channel_username', '')}"
-            buttons.append([InlineKeyboardButton(
-                text=f"📢 {channel.get('display_name', channel.get('channel_username', 'Канал'))}",
-                url=channel_link
-            )])
-        
-        buttons.append([InlineKeyboardButton(
-            text="✅ Я подписался, проверить",
-            callback_data=f"check_subscribe_channels_{task_id}"
-        )])
-        buttons.append([InlineKeyboardButton(
-            text="◀️ Назад",
-            callback_data="back_to_earn_menu"
-        )])
-        
-        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-        
-        await callback.message.edit_text(
-            "❌ Подписка не подтверждена!",
-            reply_markup=keyboard
-        )
+        if already_rewarded_channels:
+            message_text = f"Вы уже получили награду за все подписанные каналы.\n\nУже награждены:\n" + "\n".join([f"• {name}" for name in already_rewarded_channels])
+            await callback.answer("Вы уже получили награду за все каналы", show_alert=True)
+        else:
+            message_text = "❌ Вы не подписаны ни на один канал.\n\nПодпишитесь на каналы и нажмите 'Проверить' снова."
+            if error_channels:
+                message_text += f"\n\nНе удалось проверить:\n" + "\n".join([f"• {name}" for name in error_channels])
+            await callback.answer("Подпишитесь на каналы для получения награды", show_alert=True)
+    
+    await callback.message.edit_text(message_text, reply_markup=keyboard)
 
 
 @router.callback_query(F.data == "back_to_main_menu")

@@ -123,17 +123,26 @@ class Database:
             except sqlite3.OperationalError:
                 pass  # Поле уже существует
             
-            # Таблица для отслеживания награды за набор каналов
+            # Таблица для отслеживания награды за каждый канал отдельно
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS channel_rewards (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER,
-                    channels_hash TEXT,
+                    channel_id INTEGER,
                     rewarded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (user_id) REFERENCES users(user_id),
-                    UNIQUE(user_id, channels_hash)
+                    FOREIGN KEY (channel_id) REFERENCES subscribe_channels(id),
+                    UNIQUE(user_id, channel_id)
                 )
             """)
+            
+            # Миграция: если есть старая таблица с channels_hash, переименовываем её
+            try:
+                cursor.execute("ALTER TABLE channel_rewards ADD COLUMN channel_id INTEGER")
+            except sqlite3.OperationalError:
+                pass  # Поле уже существует
+            
+            # Удаляем старое поле channels_hash, если оно есть (не критично, можно оставить)
             
             # Инициализация настроек
             cursor.execute("""
@@ -150,6 +159,7 @@ class Database:
                        ('subscribe_message_text', '📢 Подпишитесь на каналы для получения награды!'),
                        ('referral_reward', '350'),
                        ('friend_referral_reward', '100'),
+                       ('subscribe_reward', '100'),
                        ('streams_button_text', '💰 Зарабатывай на просмотре стримов...'),
                        ('streams_message_text', '📖 Узнать, как зарабатывать на просмотре трансляций/стримов'),
                        ('welcome_text', '👋 Добро пожаловать!\n\nЭто бот для заработка Rcoin через выполнение заданий.\n\nВыберите действие в меню:'),
@@ -574,33 +584,24 @@ class Database:
             return {key: row[key] for key in row.keys()}
         return None
     
-    def get_channels_hash(self) -> str:
-        """Получить хеш текущего списка активных каналов для подписки"""
-        import hashlib
-        channels = self.get_subscribe_channels()
-        # Создаем строку из ID каналов, отсортированных по ID
-        channel_ids = sorted([str(ch['id']) for ch in channels])
-        channels_str = ','.join(channel_ids)
-        return hashlib.md5(channels_str.encode()).hexdigest()
-    
-    def has_received_reward_for_channels(self, user_id: int, channels_hash: str) -> bool:
-        """Проверить, получал ли пользователь награду за этот набор каналов"""
+    def has_received_reward_for_channel(self, user_id: int, channel_id: int) -> bool:
+        """Проверить, получал ли пользователь награду за конкретный канал"""
         cursor = self.conn.cursor()
         cursor.execute("""
             SELECT COUNT(*) as count FROM channel_rewards 
-            WHERE user_id = ? AND channels_hash = ?
-        """, (user_id, channels_hash))
+            WHERE user_id = ? AND channel_id = ?
+        """, (user_id, channel_id))
         row = cursor.fetchone()
         return row['count'] > 0 if row else False
     
-    def mark_reward_received(self, user_id: int, channels_hash: str):
-        """Отметить, что пользователь получил награду за этот набор каналов"""
+    def mark_reward_received_for_channel(self, user_id: int, channel_id: int):
+        """Отметить, что пользователь получил награду за конкретный канал"""
         cursor = self.conn.cursor()
         try:
             cursor.execute("""
-                INSERT INTO channel_rewards (user_id, channels_hash)
+                INSERT INTO channel_rewards (user_id, channel_id)
                 VALUES (?, ?)
-            """, (user_id, channels_hash))
+            """, (user_id, channel_id))
             self.conn.commit()
         except sqlite3.IntegrityError:
             # Уже существует
