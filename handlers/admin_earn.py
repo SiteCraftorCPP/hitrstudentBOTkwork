@@ -14,7 +14,16 @@ _db_instance = None
 def get_db():
     global _db_instance
     if _db_instance is None:
-        _db_instance = Database()
+        try:
+            _db_instance = Database()
+        except Exception as e:
+            logger.error(f"Ошибка при создании экземпляра базы данных: {e}", exc_info=True)
+            # Пытаемся пересоздать соединение
+            try:
+                _db_instance = Database()
+            except Exception as e2:
+                logger.error(f"Критическая ошибка БД: {e2}", exc_info=True)
+                raise
     return _db_instance
 
 
@@ -24,9 +33,39 @@ def get_earn_settings_keyboard():
         [InlineKeyboardButton(text="🎁 Настройки ежедневного бонуса", callback_data="admin_daily_bonus_settings")],
         [InlineKeyboardButton(text="📢 Настройки подписки на каналы", callback_data="admin_subscribe_settings")],
         [InlineKeyboardButton(text="💰 Настройки просмотра стримов", callback_data="admin_streams_settings")],
+        [InlineKeyboardButton(text="🎁 Настройки сундука с подарком", callback_data="admin_chest_settings")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]
     ])
     return keyboard
+
+
+@router.callback_query(F.data == "admin_earn_settings")
+async def admin_earn_settings(callback: CallbackQuery):
+    """Меню настроек раздела 'Начать зарабатывать'"""
+    try:
+        # Проверяем БД, но не блокируем загрузку меню
+        try:
+            db = get_db()
+            db.conn.execute("SELECT 1")
+        except Exception as db_error:
+            logger.error(f"Проблема с БД в admin_earn_settings: {db_error}")
+        
+        text = (
+            "💰 Настройки раздела 'Начать зарабатывать'\n\n"
+            "Выберите, что хотите настроить:"
+        )
+        keyboard = get_earn_settings_keyboard()
+        await callback.message.edit_text(text, reply_markup=keyboard)
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Ошибка в admin_earn_settings: {e}", exc_info=True)
+        # Пытаемся показать меню даже при ошибке
+        try:
+            keyboard = get_earn_settings_keyboard()
+            await callback.message.edit_text("💰 Настройки раздела 'Начать зарабатывать'\n\n⚠️ Ошибка при загрузке данных.", reply_markup=keyboard)
+            await callback.answer()
+        except:
+            await callback.answer("❌ Ошибка при загрузке меню", show_alert=True)
 
 
 def get_daily_bonus_settings_keyboard():
@@ -39,30 +78,6 @@ def get_daily_bonus_settings_keyboard():
     return keyboard
 
 
-def get_subscribe_settings_keyboard():
-    """Меню настроек подписки на каналы"""
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💰 Изменить награду за канал", callback_data="admin_edit_subscribe_reward")],
-        [InlineKeyboardButton(text="✏️ Изменить текст кнопки", callback_data="admin_edit_subscribe_button")],
-        [InlineKeyboardButton(text="✏️ Изменить текст сообщения", callback_data="admin_edit_subscribe_message")],
-        [InlineKeyboardButton(text="➕ Добавить канал", callback_data="admin_add_subscribe_channel")],
-        [InlineKeyboardButton(text="📋 Список каналов", callback_data="admin_list_subscribe_channels")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_earn_settings")]
-    ])
-    return keyboard
-
-
-@router.callback_query(F.data == "admin_earn_settings")
-async def admin_earn_settings(callback: CallbackQuery):
-    """Меню настроек раздела 'Начать зарабатывать'"""
-    text = (
-        "💰 Настройки раздела 'Начать зарабатывать'\n\n"
-        "Выберите, что хотите настроить:"
-    )
-    await callback.message.edit_text(text, reply_markup=get_earn_settings_keyboard())
-    await callback.answer()
-
-
 @router.callback_query(F.data == "admin_daily_bonus_settings")
 async def admin_daily_bonus_settings(callback: CallbackQuery):
     """Меню настроек ежедневного бонуса"""
@@ -72,9 +87,8 @@ async def admin_daily_bonus_settings(callback: CallbackQuery):
     
     text = (
         "🎁 Настройки ежедневного бонуса\n\n"
-        f"Текущие значения:\n"
-        f"• Минимум: {min_bonus}R\n"
-        f"• Максимум: {max_bonus}R\n\n"
+        f"Минимальный бонус: {min_bonus}R\n"
+        f"Максимальный бонус: {max_bonus}R\n\n"
         "Выберите, что хотите изменить:"
     )
     await callback.message.edit_text(text, reply_markup=get_daily_bonus_settings_keyboard())
@@ -84,12 +98,8 @@ async def admin_daily_bonus_settings(callback: CallbackQuery):
 @router.callback_query(F.data == "admin_edit_daily_min")
 async def admin_edit_daily_min(callback: CallbackQuery, state: FSMContext):
     """Редактирование минимального бонуса"""
-    db = get_db()
-    current_min = db.get_setting('daily_bonus_min', '1')
-    
     await callback.message.edit_text(
-        "✏️ Изменение минимального бонуса\n\n"
-        f"Текущее значение: {current_min}R\n\n"
+        "✏️ Изменение минимального ежедневного бонуса\n\n"
         "Отправьте новое значение (только число):",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_daily_bonus_settings")]
@@ -108,8 +118,8 @@ async def admin_save_daily_min(message: Message, state: FSMContext):
     
     try:
         min_value = int(message.text.strip())
-        if min_value < 1:
-            await message.answer("❌ Значение должно быть больше 0")
+        if min_value < 0:
+            await message.answer("❌ Значение должно быть больше или равно 0")
             return
         
         db = get_db()
@@ -127,12 +137,8 @@ async def admin_save_daily_min(message: Message, state: FSMContext):
 @router.callback_query(F.data == "admin_edit_daily_max")
 async def admin_edit_daily_max(callback: CallbackQuery, state: FSMContext):
     """Редактирование максимального бонуса"""
-    db = get_db()
-    current_max = db.get_setting('daily_bonus_max', '50')
-    
     await callback.message.edit_text(
-        "✏️ Изменение максимального бонуса\n\n"
-        f"Текущее значение: {current_max}R\n\n"
+        "✏️ Изменение максимального ежедневного бонуса\n\n"
         "Отправьте новое значение (только число):",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_daily_bonus_settings")]
@@ -151,16 +157,11 @@ async def admin_save_daily_max(message: Message, state: FSMContext):
     
     try:
         max_value = int(message.text.strip())
-        if max_value < 1:
-            await message.answer("❌ Значение должно быть больше 0")
+        if max_value < 0:
+            await message.answer("❌ Значение должно быть больше или равно 0")
             return
         
         db = get_db()
-        min_value = int(db.get_setting('daily_bonus_min', '1'))
-        if max_value < min_value:
-            await message.answer(f"❌ Максимум должен быть больше или равен минимуму ({min_value}R)")
-            return
-        
         db.set_setting('daily_bonus_max', str(max_value))
         
         await message.answer(
@@ -172,15 +173,46 @@ async def admin_save_daily_max(message: Message, state: FSMContext):
         await message.answer("❌ Пожалуйста, отправьте число")
 
 
+def get_subscribe_settings_keyboard():
+    """Меню настроек подписки на каналы"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💰 Изменить награду за канал", callback_data="admin_edit_subscribe_reward")],
+        [InlineKeyboardButton(text="✏️ Изменить текст кнопки", callback_data="admin_edit_subscribe_button")],
+        [InlineKeyboardButton(text="✏️ Изменить текст сообщения", callback_data="admin_edit_subscribe_message")],
+        [InlineKeyboardButton(text="➕ Добавить канал", callback_data="admin_add_subscribe_channel")],
+        [InlineKeyboardButton(text="📋 Список каналов", callback_data="admin_list_subscribe_channels")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_earn_settings")]
+    ])
+    return keyboard
+
+
 @router.callback_query(F.data == "admin_subscribe_settings")
 async def admin_subscribe_settings(callback: CallbackQuery):
     """Меню настроек подписки на каналы"""
-    text = (
-        "📢 Настройки подписки на каналы\n\n"
-        "Выберите действие:"
-    )
-    await callback.message.edit_text(text, reply_markup=get_subscribe_settings_keyboard())
-    await callback.answer()
+    try:
+        # Проверяем БД, но не блокируем загрузку меню
+        try:
+            db = get_db()
+            db.conn.execute("SELECT 1")
+        except Exception as db_error:
+            logger.error(f"Проблема с БД в admin_subscribe_settings: {db_error}")
+        
+        text = (
+            "📢 Настройки подписки на каналы\n\n"
+            "Выберите действие:"
+        )
+        keyboard = get_subscribe_settings_keyboard()
+        await callback.message.edit_text(text, reply_markup=keyboard)
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Ошибка в admin_subscribe_settings: {e}", exc_info=True)
+        # Пытаемся показать меню даже при ошибке
+        try:
+            keyboard = get_subscribe_settings_keyboard()
+            await callback.message.edit_text("📢 Настройки подписки на каналы\n\n⚠️ Ошибка при загрузке данных.", reply_markup=keyboard)
+            await callback.answer()
+        except:
+            await callback.answer("❌ Ошибка при загрузке меню", show_alert=True)
 
 
 @router.callback_query(F.data == "admin_edit_subscribe_button")
@@ -205,7 +237,9 @@ async def admin_save_subscribe_button(message: Message, state: FSMContext):
         return
     
     db = get_db()
-    db.set_setting('subscribe_button_text', message.text)
+    new_text = message.text
+    
+    db.set_setting('subscribe_button_text', new_text)
     
     await message.answer(
         "✅ Текст кнопки сохранен!",
@@ -236,11 +270,263 @@ async def admin_save_subscribe_message(message: Message, state: FSMContext):
         return
     
     db = get_db()
-    db.set_setting('subscribe_message_text', message.text)
+    new_text = message.text
+    
+    db.set_setting('subscribe_message_text', new_text)
     
     await message.answer(
         "✅ Текст сообщения сохранен!",
         reply_markup=get_subscribe_settings_keyboard()
+    )
+    await state.clear()
+
+
+@router.callback_query(F.data == "admin_add_subscribe_channel")
+async def admin_add_subscribe_channel_start(callback: CallbackQuery, state: FSMContext):
+    """Начало добавления канала"""
+    await callback.message.edit_text(
+        "➕ Добавление канала для подписки\n\n"
+        "Отправьте ссылку на канал:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_subscribe_settings")]
+        ])
+    )
+    await state.set_state(AdminStates.waiting_subscribe_channel_link)
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_subscribe_channel_link)
+async def admin_add_subscribe_channel_link(message: Message, state: FSMContext):
+    """Получение ссылки на канал и извлечение username/chat_id"""
+    if message.from_user.id not in ADMINS:
+        await state.clear()
+        return
+    
+    link = message.text.strip()
+    
+    # Извлекаем username или chat_id из ссылки
+    channel_username = None
+    channel_chat_id = None
+    
+    if link.startswith('https://t.me/'):
+        # Извлекаем username
+        parts = link.replace('https://t.me/', '').split('/')
+        if parts:
+            channel_username = parts[0].replace('@', '')
+    elif link.startswith('@'):
+        channel_username = link.replace('@', '')
+    elif link.startswith('-100'):
+        # Это chat_id
+        try:
+            channel_chat_id = link
+        except:
+            pass
+    
+    if not channel_username and not channel_chat_id:
+        await message.answer(
+            "❌ Не удалось определить канал из ссылки.\n\n"
+            "Отправьте ссылку в формате:\n"
+            "• https://t.me/channel_name\n"
+            "• @channel_name\n"
+            "• -1001234567890 (chat_id)",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_subscribe_settings")]
+            ])
+        )
+        return
+    
+    # Сохраняем данные во временное хранилище
+    await state.update_data(
+        channel_link=link,
+        channel_username=channel_username,
+        channel_chat_id=channel_chat_id
+    )
+    
+    await message.answer(
+        "Отправьте название канала для отображения:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_subscribe_settings")]
+        ])
+    )
+    await state.set_state(AdminStates.waiting_subscribe_channel_name)
+
+
+@router.message(AdminStates.waiting_subscribe_channel_name)
+async def admin_add_subscribe_channel_name(message: Message, state: FSMContext):
+    """Сохранение канала"""
+    if message.from_user.id not in ADMINS:
+        await state.clear()
+        return
+    
+    data = await state.get_data()
+    channel_link = data.get('channel_link')
+    channel_username = data.get('channel_username')
+    channel_chat_id = data.get('channel_chat_id')
+    display_name = message.text.strip()
+    
+    db = get_db()
+    
+    try:
+        channel_id = db.add_subscribe_channel(
+            channel_username=channel_username or '',
+            channel_link=channel_link,
+            display_name=display_name,
+            channel_chat_id=channel_chat_id
+        )
+        
+        await message.answer(
+            f"✅ Канал '{display_name}' добавлен!",
+            reply_markup=get_subscribe_settings_keyboard()
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при добавлении канала: {e}", exc_info=True)
+        await message.answer(
+            f"❌ Ошибка при добавлении канала: {e}",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_subscribe_settings")]
+            ])
+        )
+    
+    await state.clear()
+
+
+@router.callback_query(F.data == "admin_list_subscribe_channels")
+async def admin_list_subscribe_channels(callback: CallbackQuery):
+    """Список каналов для подписки"""
+    db = get_db()
+    channels = db.get_subscribe_channels()
+    
+    if not channels:
+        await callback.message.edit_text(
+            "📋 Список каналов пуст.\n\nДобавьте каналы через меню настроек.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_subscribe_settings")]
+            ])
+        )
+        await callback.answer()
+        return
+    
+    text = "📋 Список каналов для подписки:\n\n"
+    buttons = []
+    
+    for channel in channels:
+        display_name = channel.get('display_name', channel.get('channel_username', 'Без названия'))
+        channel_id = channel.get('id')
+        text += f"• {display_name}\n"
+        
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"✏️ {display_name}",
+                callback_data=f"admin_edit_channel_{channel_id}"
+            ),
+            InlineKeyboardButton(
+                text="🗑️",
+                callback_data=f"admin_delete_channel_{channel_id}"
+            )
+        ])
+    
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin_subscribe_settings")])
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_delete_channel_"))
+async def admin_delete_channel(callback: CallbackQuery):
+    """Удаление канала"""
+    channel_id = int(callback.data.split("_")[-1])
+    
+    db = get_db()
+    db.delete_subscribe_channel(channel_id)
+    
+    await callback.answer("✅ Канал удален!", show_alert=True)
+    await admin_list_subscribe_channels(callback)
+
+
+def get_streams_settings_keyboard():
+    """Меню настроек просмотра стримов"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ Изменить название кнопки", callback_data="admin_edit_streams_button")],
+        [InlineKeyboardButton(text="✏️ Изменить текст сообщения", callback_data="admin_edit_streams_message")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_earn_settings")]
+    ])
+    return keyboard
+
+
+@router.callback_query(F.data == "admin_streams_settings")
+async def admin_streams_settings(callback: CallbackQuery):
+    """Меню настроек просмотра стримов"""
+    text = (
+        "💰 Настройки просмотра стримов\n\n"
+        "Выберите, что хотите изменить:"
+    )
+    await callback.message.edit_text(text, reply_markup=get_streams_settings_keyboard())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_edit_streams_button")
+async def admin_edit_streams_button(callback: CallbackQuery, state: FSMContext):
+    """Редактирование названия кнопки стримов"""
+    await callback.message.edit_text(
+        "✏️ Изменение названия кнопки стримов\n\n"
+        "Отправьте новое название:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_streams_settings")]
+        ])
+    )
+    await state.set_state(AdminStates.waiting_streams_button_text)
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_streams_button_text)
+async def admin_save_streams_button(message: Message, state: FSMContext):
+    """Сохранение названия кнопки стримов"""
+    if message.from_user.id not in ADMINS:
+        await state.clear()
+        return
+    
+    db = get_db()
+    new_text = message.text
+    
+    db.set_setting('streams_button_text', new_text)
+    
+    await message.answer(
+        "✅ Название кнопки сохранено!",
+        reply_markup=get_streams_settings_keyboard()
+    )
+    await state.clear()
+
+
+@router.callback_query(F.data == "admin_edit_streams_message")
+async def admin_edit_streams_message(callback: CallbackQuery, state: FSMContext):
+    """Редактирование текста сообщения стримов"""
+    await callback.message.edit_text(
+        "✏️ Изменение текста сообщения стримов\n\n"
+        "Отправьте новый текст:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_streams_settings")]
+        ])
+    )
+    await state.set_state(AdminStates.waiting_streams_message_text)
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_streams_message_text)
+async def admin_save_streams_message(message: Message, state: FSMContext):
+    """Сохранение текста сообщения стримов"""
+    if message.from_user.id not in ADMINS:
+        await state.clear()
+        return
+    
+    db = get_db()
+    new_text = message.text
+    
+    db.set_setting('streams_message_text', new_text)
+    
+    await message.answer(
+        "✅ Текст сообщения сохранен!",
+        reply_markup=get_streams_settings_keyboard()
     )
     await state.clear()
 
@@ -287,245 +573,6 @@ async def admin_save_subscribe_reward(message: Message, state: FSMContext):
         await state.clear()
     except ValueError:
         await message.answer("❌ Пожалуйста, отправьте число")
-
-
-@router.callback_query(F.data == "admin_add_subscribe_channel")
-async def admin_add_subscribe_channel_start(callback: CallbackQuery, state: FSMContext):
-    """Начало добавления канала"""
-    await callback.message.edit_text(
-        "➕ Добавление канала для подписки\n\n"
-        "Отправьте ссылку на канал:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_subscribe_settings")]
-        ])
-    )
-    await state.set_state(AdminStates.waiting_subscribe_channel_link)
-    await callback.answer()
-
-
-@router.message(AdminStates.waiting_subscribe_channel_link)
-async def admin_add_subscribe_channel_link(message: Message, state: FSMContext):
-    """Получение ссылки на канал и извлечение username/chat_id"""
-    if message.from_user.id not in ADMINS:
-        await state.clear()
-        return
-    
-    link = message.text.strip()
-    
-    # Извлекаем username из ссылки
-    username = None
-    chat_id = None
-    
-    # Проверяем, является ли это invite ссылкой (закрытый канал) - пропускаем
-    if "+" in link or "joinchat" in link:
-        # Это invite ссылка - закрытые каналы не поддерживаются
-        await message.answer(
-            "❌ Закрытые каналы не поддерживаются. Отправьте ссылку на открытый канал (например: https://t.me/channelname или @channelname):",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_subscribe_settings")]
-            ])
-        )
-        return
-    
-    # Обычная ссылка - извлекаем username
-    if True:
-        # Обычная ссылка - извлекаем username
-        if link.startswith("https://t.me/"):
-            parts = link.replace("https://t.me/", "").split("/")
-            if parts[0] and not parts[0].startswith("c/") and not parts[0].startswith("joinchat/"):
-                username = parts[0].replace("@", "")
-        elif link.startswith("@"):
-            username = link.replace("@", "")
-        elif link.startswith("t.me/"):
-            parts = link.replace("t.me/", "").split("/")
-            if parts[0] and not parts[0].startswith("c/") and not parts[0].startswith("joinchat/"):
-                username = parts[0].replace("@", "")
-        else:
-            # Пытаемся использовать как username напрямую
-            username = link.replace("@", "").replace("https://t.me/", "").replace("t.me/", "").split("/")[0]
-    
-    if not username:
-        await message.answer(
-            "❌ Не удалось извлечь username из ссылки. Отправьте ссылку на открытый канал в формате:\n"
-            "https://t.me/channelname или @channelname",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_subscribe_settings")]
-            ])
-        )
-        return
-    
-    await state.update_data(channel_username=username, channel_link=link, channel_chat_id=None)
-    
-    await message.answer(
-        "Отправьте название канала для отображения:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_subscribe_settings")]
-        ])
-    )
-    await state.set_state(AdminStates.waiting_subscribe_channel_name)
-
-
-@router.message(AdminStates.waiting_subscribe_channel_name)
-async def admin_add_subscribe_channel_name(message: Message, state: FSMContext):
-    """Сохранение канала"""
-    if message.from_user.id not in ADMINS:
-        await state.clear()
-        return
-    
-    data = await state.get_data()
-    username = data.get('channel_username')
-    link = data.get('channel_link')
-    chat_id = data.get('channel_chat_id')
-    display_name = message.text.strip()
-    
-    if not link:
-        await message.answer("❌ Ошибка: данные канала не найдены")
-        await state.clear()
-        return
-    
-    db = get_db()
-    channel_id = db.add_subscribe_channel(username, link, display_name, chat_id)
-    
-    await message.answer(
-        f"✅ Канал '{display_name}' добавлен!",
-        reply_markup=get_subscribe_settings_keyboard()
-    )
-    await state.clear()
-
-
-@router.callback_query(F.data == "admin_list_subscribe_channels")
-async def admin_list_subscribe_channels(callback: CallbackQuery):
-    """Список каналов для подписки"""
-    db = get_db()
-    channels = db.get_subscribe_channels()
-    
-    if not channels:
-        await callback.message.edit_text(
-            "📋 Список каналов пуст",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_subscribe_settings")]
-            ])
-        )
-        await callback.answer()
-        return
-    
-    text = "📋 Список каналов для подписки:\n\n"
-    buttons = []
-    
-    for channel in channels:
-        username = channel.get('channel_username', 'N/A')
-        text += f"• {channel['display_name']}\n"
-        text += f"  Username: @{username if username else 'N/A'}\n\n"
-        buttons.append([InlineKeyboardButton(
-            text=f"✏️ Редактировать: {channel['display_name']}",
-            callback_data=f"admin_edit_channel_{channel['id']}"
-        )])
-        buttons.append([InlineKeyboardButton(
-            text=f"❌ Удалить: {channel['display_name']}",
-            callback_data=f"admin_delete_channel_{channel['id']}"
-        )])
-    
-    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin_subscribe_settings")])
-    
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("admin_delete_channel_"))
-async def admin_delete_channel(callback: CallbackQuery):
-    """Удаление канала"""
-    channel_id = int(callback.data.split("_")[-1])
-    
-    db = get_db()
-    db.delete_subscribe_channel(channel_id)
-    
-    await callback.answer("✅ Канал удален!", show_alert=True)
-    
-    # Обновляем список
-    await admin_list_subscribe_channels(callback)
-
-
-def get_streams_settings_keyboard():
-    """Меню настроек просмотра стримов"""
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✏️ Изменить название кнопки", callback_data="admin_edit_streams_button")],
-        [InlineKeyboardButton(text="✏️ Изменить текст сообщения", callback_data="admin_edit_streams_message")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_earn_settings")]
-    ])
-    return keyboard
-
-
-@router.callback_query(F.data == "admin_streams_settings")
-async def admin_streams_settings(callback: CallbackQuery):
-    """Меню настроек просмотра стримов"""
-    text = (
-        "💰 Настройки просмотра стримов\n\n"
-        "Выберите, что хотите изменить:"
-    )
-    await callback.message.edit_text(text, reply_markup=get_streams_settings_keyboard())
-    await callback.answer()
-
-
-@router.callback_query(F.data == "admin_edit_streams_button")
-async def admin_edit_streams_button(callback: CallbackQuery, state: FSMContext):
-    """Редактирование названия кнопки стримов"""
-    await callback.message.edit_text(
-        "✏️ Изменение названия кнопки стримов\n\n"
-        "Отправьте новое название кнопки:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_streams_settings")]
-        ])
-    )
-    await state.set_state(AdminStates.waiting_streams_button_text)
-    await callback.answer()
-
-
-@router.message(AdminStates.waiting_streams_button_text)
-async def admin_save_streams_button(message: Message, state: FSMContext):
-    """Сохранение названия кнопки стримов"""
-    if message.from_user.id not in ADMINS:
-        await state.clear()
-        return
-    
-    db = get_db()
-    db.set_setting('streams_button_text', message.text)
-    
-    await message.answer(
-        "✅ Название кнопки сохранено!",
-        reply_markup=get_streams_settings_keyboard()
-    )
-    await state.clear()
-
-
-@router.callback_query(F.data == "admin_edit_streams_message")
-async def admin_edit_streams_message(callback: CallbackQuery, state: FSMContext):
-    """Редактирование текста сообщения стримов"""
-    await callback.message.edit_text(
-        "✏️ Изменение текста сообщения стримов\n\n"
-        "Отправьте новый текст:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_streams_settings")]
-        ])
-    )
-    await state.set_state(AdminStates.waiting_streams_message_text)
-    await callback.answer()
-
-
-@router.message(AdminStates.waiting_streams_message_text)
-async def admin_save_streams_message(message: Message, state: FSMContext):
-    """Сохранение текста сообщения стримов"""
-    if message.from_user.id not in ADMINS:
-        await state.clear()
-        return
-    
-    db = get_db()
-    db.set_setting('streams_message_text', message.text)
-    
-    await message.answer(
-        "✅ Текст сообщения сохранен!",
-        reply_markup=get_streams_settings_keyboard()
-    )
-    await state.clear()
 
 
 def get_referral_settings_keyboard():
@@ -625,4 +672,102 @@ async def admin_save_friend_referral_reward(message: Message, state: FSMContext)
         await state.clear()
     except ValueError:
         await message.answer("❌ Пожалуйста, отправьте число")
+
+
+def get_chest_settings_keyboard():
+    """Меню настроек сундука с подарком"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ Изменить текст сообщения", callback_data="admin_edit_chest_message")],
+        [InlineKeyboardButton(text="🔗 Изменить ссылку на проект", callback_data="admin_edit_chest_link")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_earn_settings")]
+    ])
+    return keyboard
+
+
+@router.callback_query(F.data == "admin_chest_settings")
+async def admin_chest_settings(callback: CallbackQuery):
+    """Меню настроек сундука с подарком"""
+    try:
+        text = (
+            "🎁 Настройки сундука с подарком\n\n"
+            "Выберите, что хотите изменить:"
+        )
+        keyboard = get_chest_settings_keyboard()
+        await callback.message.edit_text(text, reply_markup=keyboard)
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Ошибка в admin_chest_settings: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка при загрузке меню", show_alert=True)
+
+
+@router.callback_query(F.data == "admin_edit_chest_message")
+async def admin_edit_chest_message(callback: CallbackQuery, state: FSMContext):
+    """Редактирование текста сообщения сундука"""
+    await callback.message.edit_text(
+        "✏️ Изменение текста сообщения сундука\n\n"
+        "Отправьте новый текст:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_chest_settings")]
+        ])
+    )
+    await state.set_state(AdminStates.waiting_chest_message_text)
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_chest_message_text)
+async def admin_save_chest_message(message: Message, state: FSMContext):
+    """Сохранение текста сообщения сундука"""
+    if message.from_user.id not in ADMINS:
+        await state.clear()
+        return
+    
+    db = get_db()
+    new_text = message.text
+    
+    db.set_setting('chest_message_text', new_text)
+    
+    await message.answer(
+        "✅ Текст сообщения сундука сохранен!",
+        reply_markup=get_chest_settings_keyboard()
+    )
+    await state.clear()
+
+
+@router.callback_query(F.data == "admin_edit_chest_link")
+async def admin_edit_chest_link(callback: CallbackQuery, state: FSMContext):
+    """Редактирование ссылки на проект"""
+    await callback.message.edit_text(
+        "🔗 Изменение ссылки на проект\n\n"
+        "Отправьте новую ссылку:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_chest_settings")]
+        ])
+    )
+    await state.set_state(AdminStates.waiting_chest_project_link)
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_chest_project_link)
+async def admin_save_chest_link(message: Message, state: FSMContext):
+    """Сохранение ссылки на проект"""
+    if message.from_user.id not in ADMINS:
+        await state.clear()
+        return
+    
+    db = get_db()
+    new_link = message.text.strip()
+    
+    # Простая проверка формата ссылки
+    if not new_link.startswith('http://') and not new_link.startswith('https://'):
+        await message.answer("❌ Ссылка должна начинаться с http:// или https://")
+        return
+    
+    db.set_setting('chest_project_link', new_link)
+    
+    await message.answer(
+        "✅ Ссылка на проект сохранена!",
+        reply_markup=get_chest_settings_keyboard()
+    )
+    await state.clear()
+
 

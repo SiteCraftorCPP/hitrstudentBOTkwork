@@ -136,13 +136,43 @@ class Database:
                 )
             """)
             
-            # Миграция: если есть старая таблица с channels_hash, переименовываем её
+            # Миграция: обновляем структуру таблицы channel_rewards
             try:
-                cursor.execute("ALTER TABLE channel_rewards ADD COLUMN channel_id INTEGER")
-            except sqlite3.OperationalError:
-                pass  # Поле уже существует
-            
-            # Удаляем старое поле channels_hash, если оно есть (не критично, можно оставить)
+                import logging
+                logger = logging.getLogger(__name__)
+                
+                # Проверяем, существует ли таблица
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='channel_rewards'")
+                table_exists = cursor.fetchone()
+                
+                if table_exists:
+                    # Проверяем, есть ли поле channel_id
+                    cursor.execute("PRAGMA table_info(channel_rewards)")
+                    columns = [row[1] for row in cursor.fetchall()]
+                    
+                    if 'channel_id' not in columns:
+                        # Добавляем поле channel_id
+                        cursor.execute("ALTER TABLE channel_rewards ADD COLUMN channel_id INTEGER")
+                        logger.info("✅ Миграция: добавлено поле channel_id в таблицу channel_rewards")
+                        
+                        # Коммитим изменения
+                        self.conn.commit()
+                    else:
+                        logger.info("✅ Миграция: поле channel_id уже существует в channel_rewards")
+                
+                # Если есть старое поле channels_hash, можно оставить его (не мешает)
+            except sqlite3.OperationalError as e:
+                # Таблица может не существовать - это нормально, она создастся выше
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"⚠️ Миграция channel_rewards: {e}")
+                pass
+            except Exception as e:
+                # Другие ошибки - логируем, но не прерываем работу
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(f"❌ Ошибка при миграции channel_rewards: {e}", exc_info=True)
+                pass
             
             # Инициализация настроек
             cursor.execute("""
@@ -165,7 +195,10 @@ class Database:
                        ('welcome_text', '👋 Добро пожаловать!\n\nЭто бот для заработка Rcoin через выполнение заданий.\n\nВыберите действие в меню:'),
                        ('stats_base_users', '29201'),
                        ('stats_bot_created', '12.06.2024г'),
-                       ('stats_base_withdrawn', '169768')
+                       ('stats_base_withdrawn', '169768'),
+                       ('chest_cost', '2000'),
+                       ('chest_message_text', '🎁 Поздравляем!\n\nДарим тебе 200FS БЕЗ ДЕПОЗИТА на проекте ... по промокоду {promo_code}'),
+                       ('chest_project_link', 'https://example.com')
             """)
             
             self.conn.commit()
@@ -610,7 +643,7 @@ class Database:
     def init_default_settings(self):
         """Инициализация настроек из config.py при первом запуске"""
         try:
-            from config import REFERRAL_REWARD, FRIEND_REFERRAL_REWARD, DAILY_BONUS_MIN, DAILY_BONUS_MAX, STATS_BASE_USERS, STATS_BOT_CREATED, STATS_BASE_WITHDRAWN
+            from config import REFERRAL_REWARD, FRIEND_REFERRAL_REWARD, DAILY_BONUS_MIN, DAILY_BONUS_MAX, STATS_BASE_USERS, STATS_BOT_CREATED, STATS_BASE_WITHDRAWN, CHEST_COST
             import logging
             logger = logging.getLogger(__name__)
             cursor = self.conn.cursor()
@@ -624,6 +657,7 @@ class Database:
                 ('stats_base_users', str(STATS_BASE_USERS)),
                 ('stats_bot_created', STATS_BOT_CREATED),
                 ('stats_base_withdrawn', str(STATS_BASE_WITHDRAWN)),
+                ('chest_cost', str(CHEST_COST)),
             ]
             
             for key, value in settings_to_update:

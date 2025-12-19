@@ -103,6 +103,10 @@ def get_earn_menu_keyboard(user_id: int):
     referral_reward = int(float(db.get_setting('referral_reward', '350')))
     buttons.append([InlineKeyboardButton(text=f"👥 Пригласить друга + {referral_reward}R", callback_data="referral_link")])
     
+    # Сундук с подарком - используем стоимость из БД
+    chest_cost = int(float(db.get_setting('chest_cost', '2000')))
+    buttons.append([InlineKeyboardButton(text=f"🎁 Открыть сундук с подарком ({chest_cost}R)", callback_data="open_chest")])
+    
     # Кнопка "Назад в меню"
     buttons.append([InlineKeyboardButton(text="◀️ Назад в меню", callback_data="back_to_main_menu")])
     

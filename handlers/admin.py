@@ -15,7 +15,16 @@ _db_instance = None
 def get_db():
     global _db_instance
     if _db_instance is None:
-        _db_instance = Database()
+        try:
+            _db_instance = Database()
+        except Exception as e:
+            logger.error(f"Ошибка при создании экземпляра базы данных: {e}", exc_info=True)
+            # Пытаемся пересоздать соединение
+            try:
+                _db_instance = Database()
+            except Exception as e2:
+                logger.error(f"Критическая ошибка БД: {e2}", exc_info=True)
+                raise
     return _db_instance
 
 
@@ -36,6 +45,8 @@ class AdminStates(StatesGroup):
     waiting_referral_reward = State()
     waiting_friend_referral_reward = State()
     waiting_subscribe_reward = State()
+    waiting_chest_message_text = State()
+    waiting_chest_project_link = State()
     waiting_welcome_text = State()
     waiting_stats_base_users = State()
     waiting_stats_bot_created = State()
@@ -69,28 +80,54 @@ def get_withdraw_settings_keyboard():
 @router.message(Command("admin"))
 async def admin_panel(message: Message, state: FSMContext):
     """Главная команда админ-панели"""
-    user_id = message.from_user.id
-    
-    if user_id not in ADMINS:
-        await message.answer("❌ У вас нет доступа к админ-панели.")
-        return
-    
-    # Очищаем состояние, если есть
-    await state.clear()
-    
-    text = "🔧 Админ-панель\n\nВыберите действие:"
-    await message.answer(text, reply_markup=get_admin_keyboard())
+    try:
+        user_id = message.from_user.id
+        
+        if user_id not in ADMINS:
+            await message.answer("❌ У вас нет доступа к админ-панели.")
+            return
+        
+        # Очищаем состояние, если есть
+        await state.clear()
+        
+        # Проверяем доступность БД, но не блокируем загрузку меню
+        try:
+            db = get_db()
+            # Простая проверка - пытаемся выполнить простой запрос
+            db.conn.execute("SELECT 1")
+        except Exception as db_error:
+            logger.error(f"Проблема с БД при загрузке админ-панели: {db_error}", exc_info=True)
+            # Продолжаем работу, но предупреждаем админа
+            text = "🔧 Админ-панель\n\n⚠️ Внимание: обнаружены проблемы с базой данных. Некоторые функции могут не работать.\n\nВыберите действие:"
+        else:
+            text = "🔧 Админ-панель\n\nВыберите действие:"
+        
+        keyboard = get_admin_keyboard()
+        await message.answer(text, reply_markup=keyboard)
+    except Exception as e:
+        logger.error(f"Ошибка в admin_panel: {e}", exc_info=True)
+        # Даже при ошибке показываем меню
+        try:
+            keyboard = get_admin_keyboard()
+            await message.answer("🔧 Админ-панель\n\n⚠️ Ошибка при инициализации. Попробуйте позже.", reply_markup=keyboard)
+        except:
+            await message.answer("❌ Критическая ошибка при загрузке админ-панели.")
 
 
 @router.callback_query(F.data == "admin_back")
 async def admin_back(callback: CallbackQuery, state: FSMContext):
     """Возврат в главное меню админ-панели"""
-    await state.clear()
-    await callback.message.edit_text(
-        "🔧 Админ-панель\n\nВыберите действие:",
-        reply_markup=get_admin_keyboard()
-    )
-    await callback.answer()
+    try:
+        await state.clear()
+        keyboard = get_admin_keyboard()
+        await callback.message.edit_text(
+            "🔧 Админ-панель\n\nВыберите действие:",
+            reply_markup=keyboard
+        )
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Ошибка в admin_back: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка при загрузке меню", show_alert=True)
 
 
 @router.callback_query(F.data == "admin_broadcast")
@@ -155,13 +192,30 @@ async def admin_broadcast_process(message: Message, state: FSMContext):
 @router.callback_query(F.data == "admin_withdraw_settings")
 async def admin_withdraw_settings(callback: CallbackQuery):
     """Меню настроек вывода"""
-    text = (
-        "⚙️ Настройки вывода на баланс сайта\n\n"
-        "Выберите, что хотите изменить:"
-    )
-    
-    await callback.message.edit_text(text, reply_markup=get_withdraw_settings_keyboard())
-    await callback.answer()
+    try:
+        # Проверяем БД, но не блокируем загрузку меню
+        try:
+            db = get_db()
+            db.conn.execute("SELECT 1")
+        except Exception as db_error:
+            logger.error(f"Проблема с БД в admin_withdraw_settings: {db_error}")
+        
+        text = (
+            "⚙️ Настройки вывода на баланс сайта\n\n"
+            "Выберите, что хотите изменить:"
+        )
+        keyboard = get_withdraw_settings_keyboard()
+        await callback.message.edit_text(text, reply_markup=keyboard)
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Ошибка в admin_withdraw_settings: {e}", exc_info=True)
+        # Пытаемся показать меню даже при ошибке
+        try:
+            keyboard = get_withdraw_settings_keyboard()
+            await callback.message.edit_text("⚙️ Настройки вывода на баланс сайта\n\n⚠️ Ошибка при загрузке данных.", reply_markup=keyboard)
+            await callback.answer()
+        except:
+            await callback.answer("❌ Ошибка при загрузке меню", show_alert=True)
 
 
 @router.callback_query(F.data == "admin_edit_confirmation")
@@ -300,12 +354,30 @@ def get_welcome_stats_settings_keyboard():
 @router.callback_query(F.data == "admin_welcome_stats_settings")
 async def admin_welcome_stats_settings(callback: CallbackQuery):
     """Меню настроек приветствия и статистики"""
-    text = (
-        "📝 Настройки приветствия и статистики\n\n"
-        "Выберите, что хотите изменить:"
-    )
-    await callback.message.edit_text(text, reply_markup=get_welcome_stats_settings_keyboard())
-    await callback.answer()
+    try:
+        # Проверяем БД, но не блокируем загрузку меню
+        try:
+            db = get_db()
+            db.conn.execute("SELECT 1")
+        except Exception as db_error:
+            logger.error(f"Проблема с БД в admin_welcome_stats_settings: {db_error}")
+        
+        text = (
+            "📝 Настройки приветствия и статистики\n\n"
+            "Выберите, что хотите изменить:"
+        )
+        keyboard = get_welcome_stats_settings_keyboard()
+        await callback.message.edit_text(text, reply_markup=keyboard)
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Ошибка в admin_welcome_stats_settings: {e}", exc_info=True)
+        # Пытаемся показать меню даже при ошибке
+        try:
+            keyboard = get_welcome_stats_settings_keyboard()
+            await callback.message.edit_text("📝 Настройки приветствия и статистики\n\n⚠️ Ошибка при загрузке данных.", reply_markup=keyboard)
+            await callback.answer()
+        except:
+            await callback.answer("❌ Ошибка при загрузке меню", show_alert=True)
 
 
 @router.callback_query(F.data == "admin_edit_welcome_text")

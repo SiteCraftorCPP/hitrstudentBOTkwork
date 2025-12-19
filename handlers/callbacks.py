@@ -264,22 +264,39 @@ async def open_chest(callback: CallbackQuery):
     user_id = callback.from_user.id
     user = db.get_user(user_id)
     
-    if user['balance'] < CHEST_COST:
-        await callback.answer("Недостаточно средств!", show_alert=True)
+    # Получаем стоимость сундука из БД
+    chest_cost = float(db.get_setting('chest_cost', '2000'))
+    
+    if not user:
+        await callback.answer("Ошибка: пользователь не найден", show_alert=True)
+        return
+    
+    balance = user.get('balance', 0.0)
+    if balance < chest_cost:
+        await callback.answer(f"Недостаточно средств! Нужно {chest_cost:.0f}R", show_alert=True)
         return
     
     # Списываем стоимость
-    db.update_user_balance(user_id, -CHEST_COST)
+    db.update_user_balance(user_id, -chest_cost)
     
-    # Генерируем промокод (пример)
+    # Генерируем промокод
     promo_code = f"CHEST{random.randint(1000, 9999)}"
     
-    text = (
-        "🎁 Поздравляем!\n\n"
-        f"Дарим тебе 200FS БЕЗ ДЕПОЗИТА на проекте ... по промокоду {promo_code}"
-    )
+    # Получаем текст и ссылку из настроек
+    chest_text = db.get_setting('chest_message_text', '🎁 Поздравляем!\n\nДарим тебе 200FS БЕЗ ДЕПОЗИТА на проекте ... по промокоду {promo_code}')
+    chest_link = db.get_setting('chest_project_link', 'https://example.com')
     
-    await callback.message.edit_text(text)
+    # Заменяем {promo_code} на реальный промокод
+    text = chest_text.replace('{promo_code}', promo_code)
+    
+    # Создаем клавиатуру со ссылкой
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔗 Перейти на проект", url=chest_link)],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_earn_menu")]
+    ])
+    
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.answer(f"✅ Сундук открыт! Промокод: {promo_code}", show_alert=True)
 
 
 @router.callback_query(F.data == "withdraw")
