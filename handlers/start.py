@@ -62,10 +62,10 @@ async def cmd_start(message: Message):
             logger.error(f"Ошибка при работе с пользователем: {e}", exc_info=True)
             # Продолжаем работу даже если есть ошибка
         
-        welcome_text = (
-            "👋 Добро пожаловать!\n\n"
-            "Это бот для заработка Rcoin через выполнение заданий.\n\n"
-            "Выберите действие в меню:"
+        # Получаем приветственное сообщение из БД
+        welcome_text = db.get_setting(
+            'welcome_text',
+            "👋 Добро пожаловать!\n\nЭто бот для заработка Rcoin через выполнение заданий.\n\nВыберите действие в меню:"
         )
         
         try:
@@ -265,18 +265,22 @@ async def show_referral_program(message: Message):
 @router.message(F.text == "📊 Статистика проекта")
 async def show_statistics(message: Message):
     try:
-        from config import STATS_BASE_USERS, STATS_BOT_CREATED, STATS_BASE_WITHDRAWN
         db = get_db()
         stats = db.get_statistics()
         
+        # Получаем настройки статистики из БД
+        base_users = int(db.get_setting('stats_base_users', '29201'))
+        bot_created = db.get_setting('stats_bot_created', '12.06.2024г')
+        base_withdrawn = int(db.get_setting('stats_base_withdrawn', '169768'))
+        
         # Прибавляем реальное количество пользователей к базовому
-        total_users = STATS_BASE_USERS + stats['total_users']
+        total_users = base_users + stats['total_users']
         
         text = (
             "📊 Статистика проекта\n\n"
             f"💰 Всего пользователей: {total_users}\n"
-            f"✅ Бот создан: {STATS_BOT_CREATED}\n"
-            f"🔗 Выплачено всего: {STATS_BASE_WITHDRAWN}RUB"
+            f"✅ Бот создан: {bot_created}\n"
+            f"🔗 Выплачено всего: {base_withdrawn}RUB"
         )
         
         keyboard = InlineKeyboardMarkup(inline_keyboard=[

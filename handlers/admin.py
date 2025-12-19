@@ -35,6 +35,10 @@ class AdminStates(StatesGroup):
     waiting_streams_message_text = State()
     waiting_referral_reward = State()
     waiting_friend_referral_reward = State()
+    waiting_welcome_text = State()
+    waiting_stats_base_users = State()
+    waiting_stats_bot_created = State()
+    waiting_stats_base_withdrawn = State()
 
 
 def get_admin_keyboard():
@@ -44,6 +48,7 @@ def get_admin_keyboard():
         [InlineKeyboardButton(text="⚙️ Настройки вывода на баланс сайта", callback_data="admin_withdraw_settings")],
         [InlineKeyboardButton(text="💰 Настройки раздела 'Начать зарабатывать'", callback_data="admin_earn_settings")],
         [InlineKeyboardButton(text="👥 Настройки реферальной программы", callback_data="admin_referral_settings")],
+        [InlineKeyboardButton(text="📝 Настройки приветствия и статистики", callback_data="admin_welcome_stats_settings")],
         [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="back_to_main_menu")]
     ])
     return keyboard
@@ -279,4 +284,202 @@ async def admin_save_site_link(message: Message, state: FSMContext):
         reply_markup=get_withdraw_settings_keyboard()
     )
     await state.clear()
+
+
+def get_welcome_stats_settings_keyboard():
+    """Меню настроек приветствия и статистики"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ Изменить приветственное сообщение", callback_data="admin_edit_welcome_text")],
+        [InlineKeyboardButton(text="📊 Редактировать статистику проекта", callback_data="admin_stats_settings")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]
+    ])
+    return keyboard
+
+
+@router.callback_query(F.data == "admin_welcome_stats_settings")
+async def admin_welcome_stats_settings(callback: CallbackQuery):
+    """Меню настроек приветствия и статистики"""
+    text = (
+        "📝 Настройки приветствия и статистики\n\n"
+        "Выберите, что хотите изменить:"
+    )
+    await callback.message.edit_text(text, reply_markup=get_welcome_stats_settings_keyboard())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_edit_welcome_text")
+async def admin_edit_welcome_text(callback: CallbackQuery, state: FSMContext):
+    """Редактирование приветственного сообщения"""
+    db = get_db()
+    current_text = db.get_setting('welcome_text', '👋 Добро пожаловать!\n\nЭто бот для заработка Rcoin через выполнение заданий.\n\nВыберите действие в меню:')
+    
+    await callback.message.edit_text(
+        "✏️ Изменение приветственного сообщения\n\n"
+        "Отправьте новый текст:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_welcome_stats_settings")]
+        ])
+    )
+    await state.set_state(AdminStates.waiting_welcome_text)
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_welcome_text)
+async def admin_save_welcome_text(message: Message, state: FSMContext):
+    """Сохранение приветственного сообщения"""
+    if message.from_user.id not in ADMINS:
+        await state.clear()
+        return
+    
+    db = get_db()
+    new_text = message.text
+    
+    db.set_setting('welcome_text', new_text)
+    
+    await message.answer(
+        "✅ Приветственное сообщение сохранено!",
+        reply_markup=get_welcome_stats_settings_keyboard()
+    )
+    await state.clear()
+
+
+def get_stats_settings_keyboard():
+    """Меню редактирования статистики проекта"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ Изменить базовое количество пользователей", callback_data="admin_edit_stats_base_users")],
+        [InlineKeyboardButton(text="✏️ Изменить дату создания бота", callback_data="admin_edit_stats_bot_created")],
+        [InlineKeyboardButton(text="✏️ Изменить базовое количество выплаченных рублей", callback_data="admin_edit_stats_base_withdrawn")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_welcome_stats_settings")]
+    ])
+    return keyboard
+
+
+@router.callback_query(F.data == "admin_stats_settings")
+async def admin_stats_settings(callback: CallbackQuery):
+    """Меню редактирования статистики проекта"""
+    db = get_db()
+    base_users = db.get_setting('stats_base_users', '29201')
+    bot_created = db.get_setting('stats_bot_created', '12.06.2024г')
+    base_withdrawn = db.get_setting('stats_base_withdrawn', '169768')
+    
+    text = (
+        "📊 Редактирование статистики проекта\n\n"
+        f"💰 Базовое количество пользователей: {base_users}\n"
+        f"✅ Дата создания бота: {bot_created}\n"
+        f"🔗 Базовое количество выплаченных рублей: {base_withdrawn}\n\n"
+        "Выберите, что хотите изменить:"
+    )
+    await callback.message.edit_text(text, reply_markup=get_stats_settings_keyboard())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_edit_stats_base_users")
+async def admin_edit_stats_base_users(callback: CallbackQuery, state: FSMContext):
+    """Редактирование базового количества пользователей"""
+    await callback.message.edit_text(
+        "✏️ Изменение базового количества пользователей\n\n"
+        "Отправьте новое значение (только число):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_stats_settings")]
+        ])
+    )
+    await state.set_state(AdminStates.waiting_stats_base_users)
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_stats_base_users)
+async def admin_save_stats_base_users(message: Message, state: FSMContext):
+    """Сохранение базового количества пользователей"""
+    if message.from_user.id not in ADMINS:
+        await state.clear()
+        return
+    
+    try:
+        value = int(message.text.strip())
+        if value < 0:
+            await message.answer("❌ Значение должно быть больше или равно 0")
+            return
+        
+        db = get_db()
+        db.set_setting('stats_base_users', str(value))
+        
+        await message.answer(
+            f"✅ Базовое количество пользователей установлено: {value}",
+            reply_markup=get_stats_settings_keyboard()
+        )
+        await state.clear()
+    except ValueError:
+        await message.answer("❌ Пожалуйста, отправьте число")
+
+
+@router.callback_query(F.data == "admin_edit_stats_bot_created")
+async def admin_edit_stats_bot_created(callback: CallbackQuery, state: FSMContext):
+    """Редактирование даты создания бота"""
+    await callback.message.edit_text(
+        "✏️ Изменение даты создания бота\n\n"
+        "Отправьте новую дату (например: 12.06.2024г):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_stats_settings")]
+        ])
+    )
+    await state.set_state(AdminStates.waiting_stats_bot_created)
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_stats_bot_created)
+async def admin_save_stats_bot_created(message: Message, state: FSMContext):
+    """Сохранение даты создания бота"""
+    if message.from_user.id not in ADMINS:
+        await state.clear()
+        return
+    
+    db = get_db()
+    new_date = message.text.strip()
+    
+    db.set_setting('stats_bot_created', new_date)
+    
+    await message.answer(
+        f"✅ Дата создания бота установлена: {new_date}",
+        reply_markup=get_stats_settings_keyboard()
+    )
+    await state.clear()
+
+
+@router.callback_query(F.data == "admin_edit_stats_base_withdrawn")
+async def admin_edit_stats_base_withdrawn(callback: CallbackQuery, state: FSMContext):
+    """Редактирование базового количества выплаченных рублей"""
+    await callback.message.edit_text(
+        "✏️ Изменение базового количества выплаченных рублей\n\n"
+        "Отправьте новое значение (только число):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_stats_settings")]
+        ])
+    )
+    await state.set_state(AdminStates.waiting_stats_base_withdrawn)
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_stats_base_withdrawn)
+async def admin_save_stats_base_withdrawn(message: Message, state: FSMContext):
+    """Сохранение базового количества выплаченных рублей"""
+    if message.from_user.id not in ADMINS:
+        await state.clear()
+        return
+    
+    try:
+        value = int(message.text.strip())
+        if value < 0:
+            await message.answer("❌ Значение должно быть больше или равно 0")
+            return
+        
+        db = get_db()
+        db.set_setting('stats_base_withdrawn', str(value))
+        
+        await message.answer(
+            f"✅ Базовое количество выплаченных рублей установлено: {value}",
+            reply_markup=get_stats_settings_keyboard()
+        )
+        await state.clear()
+    except ValueError:
+        await message.answer("❌ Пожалуйста, отправьте число")
 

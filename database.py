@@ -147,10 +147,24 @@ class Database:
                        ('daily_bonus_min', '1'),
                        ('daily_bonus_max', '50'),
                        ('subscribe_button_text', '📢 Подписаться на каналы'),
-                       ('subscribe_message_text', '📢 Подпишитесь на каналы для получения награды!')
+                       ('subscribe_message_text', '📢 Подпишитесь на каналы для получения награды!'),
+                       ('referral_reward', '350'),
+                       ('friend_referral_reward', '100'),
+                       ('streams_button_text', '💰 Зарабатывай на просмотре стримов...'),
+                       ('streams_message_text', '📖 Узнать, как зарабатывать на просмотре трансляций/стримов'),
+                       ('welcome_text', '👋 Добро пожаловать!\n\nЭто бот для заработка Rcoin через выполнение заданий.\n\nВыберите действие в меню:'),
+                       ('stats_base_users', '29201'),
+                       ('stats_bot_created', '12.06.2024г'),
+                       ('stats_base_withdrawn', '169768')
             """)
             
             self.conn.commit()
+            
+            # Инициализация настроек из config.py (обновляем значения, если они есть в config)
+            self.init_default_settings()
+            
+            # Инициализация заданий при первом запуске
+            self.init_default_tasks()
         except Exception as e:
             import logging
             logger = logging.getLogger(__name__)
@@ -591,4 +605,89 @@ class Database:
         except sqlite3.IntegrityError:
             # Уже существует
             pass
+    
+    def init_default_settings(self):
+        """Инициализация настроек из config.py при первом запуске"""
+        try:
+            from config import REFERRAL_REWARD, FRIEND_REFERRAL_REWARD, DAILY_BONUS_MIN, DAILY_BONUS_MAX, STATS_BASE_USERS, STATS_BOT_CREATED, STATS_BASE_WITHDRAWN
+            import logging
+            logger = logging.getLogger(__name__)
+            cursor = self.conn.cursor()
+            
+            # Обновляем настройки из config.py, если они еще не установлены
+            settings_to_update = [
+                ('referral_reward', str(REFERRAL_REWARD)),
+                ('friend_referral_reward', str(FRIEND_REFERRAL_REWARD)),
+                ('daily_bonus_min', str(DAILY_BONUS_MIN)),
+                ('daily_bonus_max', str(DAILY_BONUS_MAX)),
+                ('stats_base_users', str(STATS_BASE_USERS)),
+                ('stats_bot_created', STATS_BOT_CREATED),
+                ('stats_base_withdrawn', str(STATS_BASE_WITHDRAWN)),
+            ]
+            
+            for key, value in settings_to_update:
+                # Проверяем, существует ли настройка
+                cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+                if not cursor.fetchone():
+                    # Если нет - добавляем
+                    cursor.execute("INSERT INTO settings (key, value) VALUES (?, ?)", (key, value))
+                    logger.info(f"Инициализирована настройка: {key} = {value}")
+            
+            self.conn.commit()
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Ошибка при инициализации настроек: {e}", exc_info=True)
+    
+    def init_default_tasks(self):
+        """Инициализация заданий при первом запуске, если их нет"""
+        try:
+            from config import SUBSCRIBE_REWARD, STREAM_INFO_REWARD
+            cursor = self.conn.cursor()
+            
+            # Проверяем, есть ли задание типа 'subscribe'
+            cursor.execute("SELECT COUNT(*) as count FROM tasks WHERE task_type = 'subscribe' AND is_active = 1")
+            subscribe_count = cursor.fetchone()['count']
+            
+            if subscribe_count == 0:
+                # Создаем задание для подписки на каналы
+                cursor.execute("""
+                    INSERT INTO tasks (task_type, title, description, reward, is_active)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (
+                    'subscribe',
+                    'Подписаться на каналы',
+                    'Подпишитесь на все указанные каналы для получения награды',
+                    SUBSCRIBE_REWARD,
+                    1
+                ))
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.info("Создано задание для подписки на каналы")
+            
+            # Проверяем, есть ли задание типа 'info'
+            cursor.execute("SELECT COUNT(*) as count FROM tasks WHERE task_type = 'info' AND is_active = 1")
+            info_count = cursor.fetchone()['count']
+            
+            if info_count == 0:
+                # Создаем задание для просмотра информации о стримах
+                cursor.execute("""
+                    INSERT INTO tasks (task_type, title, description, reward, is_active)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (
+                    'info',
+                    'Узнать, как зарабатывать на просмотре трансляций/стримов',
+                    'Заработок на просмотре трансляций и стримов - это простой способ получать дополнительный доход.',
+                    STREAM_INFO_REWARD,
+                    1
+                ))
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.info("Создано задание для просмотра информации о стримах")
+            
+            self.conn.commit()
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Ошибка при инициализации заданий: {e}", exc_info=True)
 
