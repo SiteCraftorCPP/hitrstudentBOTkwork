@@ -221,124 +221,178 @@ async def admin_withdraw_settings(callback: CallbackQuery):
 @router.callback_query(F.data == "admin_edit_confirmation")
 async def admin_edit_confirmation(callback: CallbackQuery, state: FSMContext):
     """Редактирование текста подтверждения"""
-    db = get_db()
-    current_text = db.get_setting('withdraw_site_confirmation_text', '')
-    
-    # Убираем "Сумма: {amount:.0f} Rcoin" из текущего текста для отображения
-    display_text = current_text.replace('Сумма: {amount:.0f} Rcoin', '').replace('\n\n\n', '\n\n').strip()
-    
-    await callback.message.edit_text(
-        "✏️ Изменение текста подтверждения вывода\n\n"
-        f"Текущий текст:\n{display_text}\n\n"
-        "Отправьте новый текст:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_withdraw_settings")]
-        ])
-    )
-    await state.set_state(AdminStates.waiting_withdraw_confirmation_text)
-    await callback.answer()
+    try:
+        logger.info(f"Начало редактирования текста подтверждения от {callback.from_user.id}")
+        db = get_db()
+        current_text = db.get_setting('withdraw_site_confirmation_text', '')
+        
+        # Убираем "Сумма: {amount:.0f} Rcoin" из текущего текста для отображения
+        display_text = current_text.replace('Сумма: {amount:.0f} Rcoin', '').replace('\n\n\n', '\n\n').strip()
+        
+        await callback.message.edit_text(
+            "✏️ Изменение текста подтверждения вывода\n\n"
+            f"Текущий текст:\n{display_text}\n\n"
+            "Отправьте новый текст:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_withdraw_settings")]
+            ])
+        )
+        await state.set_state(AdminStates.waiting_withdraw_confirmation_text)
+        logger.info(f"Состояние установлено: waiting_withdraw_confirmation_text для {callback.from_user.id}")
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Ошибка в admin_edit_confirmation: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка при загрузке. Попробуйте позже.", show_alert=True)
 
 
 @router.message(AdminStates.waiting_withdraw_confirmation_text)
 async def admin_save_confirmation_text(message: Message, state: FSMContext):
     """Сохранение текста подтверждения"""
-    if message.from_user.id not in ADMINS:
+    try:
+        logger.info(f"Получено сообщение для сохранения текста подтверждения от {message.from_user.id}")
+        if message.from_user.id not in ADMINS:
+            logger.warning(f"Попытка сохранения от не-админа {message.from_user.id}")
+            await state.clear()
+            return
+        
+        db = get_db()
+        new_text = message.text
+        logger.info(f"Новый текст подтверждения: {new_text[:50]}...")
+        
+        # Автоматически добавляем "Сумма: {amount:.0f} Rcoin" если его нет в тексте
+        if 'Сумма:' not in new_text and '{amount}' not in new_text:
+            new_text = f"{new_text}\n\nСумма: {{amount:.0f}} Rcoin"
+        
+        db.set_setting('withdraw_site_confirmation_text', new_text)
+        logger.info("Текст подтверждения успешно сохранен в БД")
+        
+        await message.answer(
+            "✅ Текст подтверждения сохранен!",
+            reply_markup=get_withdraw_settings_keyboard()
+        )
         await state.clear()
-        return
-    
-    db = get_db()
-    new_text = message.text
-    
-    # Автоматически добавляем "Сумма: {amount:.0f} Rcoin" если его нет в тексте
-    if 'Сумма:' not in new_text and '{amount}' not in new_text:
-        new_text = f"{new_text}\n\nСумма: {{amount:.0f}} Rcoin"
-    
-    db.set_setting('withdraw_site_confirmation_text', new_text)
-    
-    await message.answer(
-        "✅ Текст подтверждения сохранен!",
-        reply_markup=get_withdraw_settings_keyboard()
-    )
-    await state.clear()
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении текста подтверждения: {e}", exc_info=True)
+        await message.answer(
+            f"❌ Ошибка при сохранении: {str(e)}\n\nПопробуйте еще раз или обратитесь к разработчику.",
+            reply_markup=get_withdraw_settings_keyboard()
+        )
+        await state.clear()
 
 
 @router.callback_query(F.data == "admin_edit_success")
 async def admin_edit_success(callback: CallbackQuery, state: FSMContext):
     """Редактирование текста успешного вывода"""
-    db = get_db()
-    current_text = db.get_setting('withdraw_site_success_text', '')
-    
-    await callback.message.edit_text(
-        "✏️ Изменение текста успешного вывода\n\n"
-        f"Текущий текст:\n{current_text}\n\n"
-        "Отправьте новый текст:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_withdraw_settings")]
-        ])
-    )
-    await state.set_state(AdminStates.waiting_withdraw_success_text)
-    await callback.answer()
+    try:
+        logger.info(f"Начало редактирования текста успешного вывода от {callback.from_user.id}")
+        db = get_db()
+        current_text = db.get_setting('withdraw_site_success_text', '')
+        
+        await callback.message.edit_text(
+            "✏️ Изменение текста успешного вывода\n\n"
+            f"Текущий текст:\n{current_text}\n\n"
+            "Отправьте новый текст:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_withdraw_settings")]
+            ])
+        )
+        await state.set_state(AdminStates.waiting_withdraw_success_text)
+        logger.info(f"Состояние установлено: waiting_withdraw_success_text для {callback.from_user.id}")
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Ошибка в admin_edit_success: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка при загрузке. Попробуйте позже.", show_alert=True)
 
 
 @router.message(AdminStates.waiting_withdraw_success_text)
 async def admin_save_success_text(message: Message, state: FSMContext):
     """Сохранение текста успешного вывода"""
-    if message.from_user.id not in ADMINS:
+    try:
+        logger.info(f"Получено сообщение для сохранения текста успешного вывода от {message.from_user.id}")
+        if message.from_user.id not in ADMINS:
+            logger.warning(f"Попытка сохранения от не-админа {message.from_user.id}")
+            await state.clear()
+            return
+        
+        db = get_db()
+        new_text = message.text
+        logger.info(f"Новый текст успешного вывода: {new_text[:50]}...")
+        
+        db.set_setting('withdraw_site_success_text', new_text)
+        logger.info("Текст успешного вывода успешно сохранен в БД")
+        
+        await message.answer(
+            "✅ Текст успешного вывода сохранен!",
+            reply_markup=get_withdraw_settings_keyboard()
+        )
         await state.clear()
-        return
-    
-    db = get_db()
-    new_text = message.text
-    
-    db.set_setting('withdraw_site_success_text', new_text)
-    
-    await message.answer(
-        "✅ Текст успешного вывода сохранен!",
-        reply_markup=get_withdraw_settings_keyboard()
-    )
-    await state.clear()
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении текста успешного вывода: {e}", exc_info=True)
+        await message.answer(
+            f"❌ Ошибка при сохранении: {str(e)}\n\nПопробуйте еще раз или обратитесь к разработчику.",
+            reply_markup=get_withdraw_settings_keyboard()
+        )
+        await state.clear()
 
 
 @router.callback_query(F.data == "admin_edit_site_link")
 async def admin_edit_site_link(callback: CallbackQuery, state: FSMContext):
     """Редактирование ссылки на сайт"""
-    db = get_db()
-    current_link = db.get_setting('withdraw_site_link', 'https://example.com')
-    
-    await callback.message.edit_text(
-        "🔗 Изменение ссылки на сайт\n\n"
-        f"Текущая ссылка:\n{current_link}\n\n"
-        "Отправьте новую ссылку:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_withdraw_settings")]
-        ])
-    )
-    await state.set_state(AdminStates.waiting_withdraw_site_link)
-    await callback.answer()
+    try:
+        logger.info(f"Начало редактирования ссылки на сайт от {callback.from_user.id}")
+        db = get_db()
+        current_link = db.get_setting('withdraw_site_link', 'https://example.com')
+        
+        await callback.message.edit_text(
+            "🔗 Изменение ссылки на сайт\n\n"
+            f"Текущая ссылка:\n{current_link}\n\n"
+            "Отправьте новую ссылку:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_withdraw_settings")]
+            ])
+        )
+        await state.set_state(AdminStates.waiting_withdraw_site_link)
+        logger.info(f"Состояние установлено: waiting_withdraw_site_link для {callback.from_user.id}")
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Ошибка в admin_edit_site_link: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка при загрузке. Попробуйте позже.", show_alert=True)
 
 
 @router.message(AdminStates.waiting_withdraw_site_link)
 async def admin_save_site_link(message: Message, state: FSMContext):
     """Сохранение ссылки на сайт"""
-    if message.from_user.id not in ADMINS:
+    try:
+        logger.info(f"Получено сообщение для сохранения ссылки на сайт от {message.from_user.id}")
+        if message.from_user.id not in ADMINS:
+            logger.warning(f"Попытка сохранения от не-админа {message.from_user.id}")
+            await state.clear()
+            return
+        
+        db = get_db()
+        new_link = message.text.strip()
+        logger.info(f"Новая ссылка: {new_link}")
+        
+        # Простая проверка формата ссылки
+        if not new_link.startswith('http://') and not new_link.startswith('https://'):
+            await message.answer("❌ Ссылка должна начинаться с http:// или https://")
+            return
+        
+        db.set_setting('withdraw_site_link', new_link)
+        logger.info("Ссылка на сайт успешно сохранена в БД")
+        
+        await message.answer(
+            "✅ Ссылка на сайт сохранена!",
+            reply_markup=get_withdraw_settings_keyboard()
+        )
         await state.clear()
-        return
-    
-    db = get_db()
-    new_link = message.text.strip()
-    
-    # Простая проверка формата ссылки
-    if not new_link.startswith('http://') and not new_link.startswith('https://'):
-        await message.answer("❌ Ссылка должна начинаться с http:// или https://")
-        return
-    
-    db.set_setting('withdraw_site_link', new_link)
-    
-    await message.answer(
-        "✅ Ссылка на сайт сохранена!",
-        reply_markup=get_withdraw_settings_keyboard()
-    )
-    await state.clear()
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении ссылки на сайт: {e}", exc_info=True)
+        await message.answer(
+            f"❌ Ошибка при сохранении: {str(e)}\n\nПопробуйте еще раз или обратитесь к разработчику.",
+            reply_markup=get_withdraw_settings_keyboard()
+        )
+        await state.clear()
 
 
 def get_welcome_stats_settings_keyboard():
