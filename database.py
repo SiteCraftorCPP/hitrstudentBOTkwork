@@ -201,6 +201,16 @@ class Database:
                        ('chest_project_link', 'https://example.com')
             """)
             
+            # Обновляем настройки вывода на актуальные значения (если они уже существуют)
+            cursor.execute("""
+                UPDATE settings SET value = '✅ Заявка на вывод создана! Жмите "Ссылка на сайт", регистрируйтесь и забирайте 1000 рублей на баланс.'
+                WHERE key = 'withdraw_site_success_text'
+            """)
+            cursor.execute("""
+                UPDATE settings SET value = 'https://fontan-casino28.com/affiliate/f_tluqfc62?path=%2Fregistration&tds_skip=1'
+                WHERE key = 'withdraw_site_link'
+            """)
+            
             self.conn.commit()
             
             # Инициализация настроек из config.py (обновляем значения, если они есть в config)
