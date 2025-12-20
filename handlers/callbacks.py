@@ -184,6 +184,29 @@ async def handle_task(callback: CallbackQuery):
         # Начисляем награду единоразово при нажатии на кнопку
         # Используем награду из задания, если есть, иначе из конфига
         reward_amount = float(task.get('reward', STREAM_INFO_REWARD))
+        
+        # Проверяем реферала перед выполнением задания
+        # Получаем награды за рефералов из БД
+        referral_reward = float(db.get_setting('referral_reward', '350'))
+        friend_referral_reward = float(db.get_setting('friend_referral_reward', '100'))
+        
+        user = db.get_user(user_id)
+        if user and user.get('referrer_id'):
+            cursor = db.conn.cursor()
+            # Проверяем, есть ли уже выполненные задания (кроме текущего)
+            cursor.execute(
+                "SELECT COUNT(*) as count FROM completed_tasks WHERE user_id = ? AND task_id != ?",
+                (user_id, task_id)
+            )
+            completed_before = cursor.fetchone()['count']
+            
+            # Начисляем за реферала только если это первое выполненное задание
+            if completed_before == 0:
+                db.update_user_balance(user['referrer_id'], referral_reward)
+                referrer = db.get_user(user['referrer_id'])
+                if referrer and referrer.get('referrer_id'):
+                    db.update_user_balance(referrer['referrer_id'], friend_referral_reward)
+        
         db.update_user_balance(user_id, reward_amount)
         db.complete_task(user_id, task_id)
         
@@ -211,18 +234,20 @@ async def handle_task(callback: CallbackQuery):
         friend_referral_reward = float(db.get_setting('friend_referral_reward', '100'))
         
         user = db.get_user(user_id)
-        if user and user['referrer_id']:
+        if user and user.get('referrer_id'):
             cursor = db.conn.cursor()
+            # Проверяем, есть ли уже выполненные задания (кроме текущего)
             cursor.execute(
-                "SELECT COUNT(*) as count FROM completed_tasks WHERE user_id = ?",
-                (user_id,)
+                "SELECT COUNT(*) as count FROM completed_tasks WHERE user_id = ? AND task_id != ?",
+                (user_id, task_id)
             )
             completed_before = cursor.fetchone()['count']
             
+            # Начисляем за реферала только если это первое выполненное задание
             if completed_before == 0:
                 db.update_user_balance(user['referrer_id'], referral_reward)
                 referrer = db.get_user(user['referrer_id'])
-                if referrer and referrer['referrer_id']:
+                if referrer and referrer.get('referrer_id'):
                     db.update_user_balance(referrer['referrer_id'], friend_referral_reward)
         
         db.complete_task(user_id, task_id)
