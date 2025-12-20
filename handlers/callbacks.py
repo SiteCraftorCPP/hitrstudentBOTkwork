@@ -168,21 +168,40 @@ async def handle_task(callback: CallbackQuery):
         return
     
     elif task['task_type'] == 'info':
-        # Просто показываем информацию, БЕЗ начисления награды и БЕЗ пометки как выполненное
-        # Кнопка должна оставаться видимой
-        # НЕ вызываем db.complete_task() - задание не помечается как выполненное
-        # НЕ начисляем награду
-        # НЕ проверяем реферала
+        # Проверяем, получал ли пользователь уже награду за стримы
+        if db.is_task_completed(user_id, task_id):
+            # Уже получил награду - просто показываем сообщение
+            text = db.get_setting('streams_message_text', task.get('description', task.get('title', '📖 Узнать, как зарабатывать на просмотре трансляций/стримов')))
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_earn_menu")]
+            ])
+            
+            await callback.answer("Вы уже получили награду за это задание!", show_alert=True)
+            await callback.message.edit_text(text, reply_markup=keyboard)
+            return
+        
+        # Начисляем награду единоразово при нажатии на кнопку
+        # Используем награду из задания, если есть, иначе из конфига
+        reward_amount = float(task.get('reward', STREAM_INFO_REWARD))
+        db.update_user_balance(user_id, reward_amount)
+        db.complete_task(user_id, task_id)
+        
+        # Получаем обновленный баланс
+        user = db.get_user(user_id)
         
         # Используем настройку из БД для текста сообщения
         text = db.get_setting('streams_message_text', task.get('description', task.get('title', '📖 Узнать, как зарабатывать на просмотре трансляций/стримов')))
+        
+        # Добавляем информацию о начислении
+        text_with_reward = f"{text}\n\n✅ Начислено: {int(reward_amount)}R\n💰 Ваш баланс: {user['balance']:.2f}R"
         
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_earn_menu")]
         ])
         
-        await callback.answer()
-        await callback.message.edit_text(text, reply_markup=keyboard)
+        await callback.answer(f"✅ Начислено {int(reward_amount)}R!", show_alert=True)
+        await callback.message.edit_text(text_with_reward, reply_markup=keyboard)
     
     elif task['task_type'] == 'custom':
         # Для кастомных заданий
