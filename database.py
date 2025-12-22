@@ -181,8 +181,9 @@ class Database:
                        ('total_users', '0'),
                        ('total_withdrawn', '0'),
                        ('withdraw_site_confirmation_text', '💸 Подтвердите вывод\n\nСумма: {amount:.0f} Rcoin\n\n📌 Пример: 5000 Rcoin = 1000 рублей на балансе\n\nПодтверждаете вывод?'),
-                       ('withdraw_site_success_text', '✅ Заявка на вывод создана! Жмите "Ссылка на сайт", регистрируйтесь и забирайте 1000 рублей на баланс.'),
+                       ('withdraw_site_success_text', '✅ Заявка на вывод создана! Жмите кнопку: "Ссылка на сайт", регистрируйтесь и получите 1000 рублей на баланс. ( может понадобиться VPN )'),
                        ('withdraw_site_link', 'https://fontan-casino28.com/affiliate/f_tluqfc62?path=%2Fregistration&tds_skip=1'),
+                       ('withdraw_usdt_success_text', '✅ Заявка на вывод создана! Проверка качества приглашенных Вами рефералов займет от 1 до 7 рабочих дней. Также вы можете воспользоваться другим способом вывода. Он сразу поступит Вам на баланс.'),
                        ('daily_bonus_min', '1'),
                        ('daily_bonus_max', '50'),
                        ('subscribe_button_text', '📢 Подписаться на каналы'),
@@ -191,7 +192,7 @@ class Database:
                        ('friend_referral_reward', '100'),
                        ('subscribe_reward', '100'),
                        ('streams_button_text', '💰 Зарабатывай на просмотре стримов...'),
-                       ('streams_message_text', '📖 Узнать, как зарабатывать на просмотре трансляций/стримов'),
+                       ('streams_message_text', '📖 Узнать, как зарабатывать на просмотре трансляций/стримов\n\n📢 Для получения награды необходимо подписаться на канал: @akatsik\n\nПосле подписки нажмите кнопку "✅ Я подписался, проверить"'),
                        ('welcome_text', '👋 Добро пожаловать!\n\nЭто бот для заработка Rcoin через выполнение заданий.\n\nВыберите действие в меню:'),
                        ('stats_base_users', '29201'),
                        ('stats_bot_created', '12.06.2024г'),
@@ -203,12 +204,16 @@ class Database:
             
             # Обновляем настройки вывода на актуальные значения (если они уже существуют)
             cursor.execute("""
-                UPDATE settings SET value = '✅ Заявка на вывод создана! Жмите "Ссылка на сайт", регистрируйтесь и забирайте 1000 рублей на баланс.'
+                UPDATE settings SET value = '✅ Заявка на вывод создана! Жмите кнопку: "Ссылка на сайт", регистрируйтесь и получите 1000 рублей на баланс. ( может понадобиться VPN )'
                 WHERE key = 'withdraw_site_success_text'
             """)
             cursor.execute("""
                 UPDATE settings SET value = 'https://fontan-casino28.com/affiliate/f_tluqfc62?path=%2Fregistration&tds_skip=1'
                 WHERE key = 'withdraw_site_link'
+            """)
+            cursor.execute("""
+                UPDATE settings SET value = '✅ Заявка на вывод создана! Проверка качества приглашенных Вами рефералов займет от 1 до 7 рабочих дней. Также вы можете воспользоваться другим способом вывода. Он сразу поступит Вам на баланс.'
+                WHERE key = 'withdraw_usdt_success_text'
             """)
             
             self.conn.commit()
@@ -445,12 +450,13 @@ class Database:
             VALUES (?, ?, ?, ?, 'pending')
         """, (user_id, amount, method, wallet))
         
-        # Только списываем баланс, НЕ обновляем withdrawn
-        # withdrawn будет обновлен только при подтверждении вывода админом
-        cursor.execute("""
-            UPDATE users SET balance = balance - ?
-            WHERE user_id = ?
-        """, (amount, user_id))
+        # Списываем баланс только для вывода на баланс сайта
+        # Для вывода на криптокошелек (USDT) баланс НЕ списывается
+        if method == "site":
+            cursor.execute("""
+                UPDATE users SET balance = balance - ?
+                WHERE user_id = ?
+            """, (amount, user_id))
         
         # НЕ обновляем статистику total_withdrawn здесь
         # Она будет обновлена только при подтверждении вывода
@@ -464,7 +470,7 @@ class Database:
         
         # Получаем информацию о выводе
         cursor.execute("""
-            SELECT user_id, amount, status FROM withdrawals WHERE id = ?
+            SELECT user_id, amount, method, status FROM withdrawals WHERE id = ?
         """, (withdrawal_id,))
         withdrawal = cursor.fetchone()
         
@@ -473,6 +479,15 @@ class Database:
         
         user_id = withdrawal['user_id']
         amount = withdrawal['amount']
+        method = withdrawal['method']
+        
+        # Для вывода на криптокошелек (USDT) списываем баланс при подтверждении
+        # Для вывода на баланс сайта баланс уже был списан при создании заявки
+        if method == "usdt":
+            cursor.execute("""
+                UPDATE users SET balance = balance - ?
+                WHERE user_id = ?
+            """, (amount, user_id))
         
         # Обновляем withdrawn только при подтверждении
         cursor.execute("""
@@ -560,6 +575,50 @@ class Database:
         cursor.execute("SELECT user_id FROM users")
         rows = cursor.fetchall()
         return [row['user_id'] for row in rows]
+    
+    def get_all_users_with_details(self, limit: int = 100, offset: int = 0) -> List[Dict]:
+        """Получить список всех пользователей с их данными"""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT user_id, username, first_name, balance, withdrawn, invited_count, created_at
+            FROM users
+            ORDER BY created_at DESC
+            LIMIT ? OFFSET ?
+        """, (limit, offset))
+        rows = cursor.fetchall()
+        return [{key: row[key] for key in row.keys()} for row in rows]
+    
+    def get_users_count(self) -> int:
+        """Получить общее количество пользователей"""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT COUNT(*) as count FROM users")
+        row = cursor.fetchone()
+        return row['count'] if row else 0
+    
+    def set_user_balance(self, user_id: int, balance: float) -> bool:
+        """Установить конкретный баланс пользователя (не добавлять, а установить)"""
+        try:
+            cursor = self.conn.cursor()
+            
+            # Создаем пользователя, если его нет
+            cursor.execute("""
+                INSERT OR IGNORE INTO users (user_id, username, first_name, balance)
+                VALUES (?, ?, ?, 0.0)
+            """, (user_id, "", ""))
+            
+            # Устанавливаем баланс
+            cursor.execute("""
+                UPDATE users SET balance = ? WHERE user_id = ?
+            """, (balance, user_id))
+            
+            self.conn.commit()
+            return cursor.rowcount > 0
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Ошибка при установке баланса: {e}", exc_info=True)
+            self.conn.rollback()
+            return False
 
     def get_subscribe_channels(self, active_only: bool = True) -> List[Dict]:
         """Получить список активных каналов для подписки"""

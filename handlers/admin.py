@@ -51,12 +51,14 @@ class AdminStates(StatesGroup):
     waiting_stats_base_users = State()
     waiting_stats_bot_created = State()
     waiting_stats_base_withdrawn = State()
+    waiting_user_balance = State()
 
 
 def get_admin_keyboard():
     """Главное меню админ-панели"""
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📢 Рассылка сообщений", callback_data="admin_broadcast")],
+        [InlineKeyboardButton(text="📊 Статистика пользователей", callback_data="admin_users_stats")],
         [InlineKeyboardButton(text="⚙️ Настройки вывода на баланс сайта", callback_data="admin_withdraw_settings")],
         [InlineKeyboardButton(text="💰 Настройки раздела 'Начать зарабатывать'", callback_data="admin_earn_settings")],
         [InlineKeyboardButton(text="👥 Настройки реферальной программы", callback_data="admin_referral_settings")],
@@ -609,4 +611,185 @@ async def admin_save_stats_base_withdrawn(message: Message, state: FSMContext):
         await state.clear()
     except ValueError:
         await message.answer("❌ Пожалуйста, отправьте число")
+
+
+@router.callback_query(F.data == "admin_users_stats")
+async def admin_users_stats(callback: CallbackQuery):
+    """Меню статистики пользователей"""
+    try:
+        db = get_db()
+        total_users = db.get_users_count()
+        users = db.get_all_users_with_details(limit=30, offset=0)
+        
+        if not users:
+            await callback.message.edit_text(
+                "📊 Статистика пользователей\n\n"
+                "Пользователи не найдены.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]
+                ])
+            )
+            await callback.answer()
+            return
+        
+        text = f"📊 Статистика пользователей\n\n"
+        text += f"Всего пользователей: {total_users}\n"
+        text += f"Показано: {len(users)}\n\n"
+        text += "Список пользователей:\n\n"
+        
+        buttons = []
+        
+        for idx, user in enumerate(users[:30], 1):  # Ограничиваем до 30 для отображения
+            user_id = user.get('user_id', 0)
+            username = user.get('username', '')
+            first_name = user.get('first_name', 'Без имени')
+            balance = float(user.get('balance', 0.0))
+            withdrawn = float(user.get('withdrawn', 0.0))
+            invited_count = user.get('invited_count', 0)
+            
+            # Формируем короткое имя для кнопки
+            short_name = first_name[:15] if first_name else f"ID{user_id}"
+            if username:
+                short_name = username[:15]
+            
+            # Формируем полное имя для текста
+            display_name = first_name
+            if username:
+                display_name += f" (@{username})"
+            else:
+                display_name += f" (ID: {user_id})"
+            
+            # Компактное отображение в тексте
+            text += f"{idx}. {display_name[:35]}\n"
+            text += f"   💰 {balance:.0f}R | 💸 {withdrawn:.0f}R | 👥 {invited_count}\n\n"
+            
+            # Кнопка для редактирования баланса (компактная)
+            buttons.append([
+                InlineKeyboardButton(
+                    text=f"✏️ {short_name}",
+                    callback_data=f"admin_edit_user_balance_{user_id}"
+                )
+            ])
+        
+        # Добавляем кнопку "Назад"
+        buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")])
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        
+        # Если текст слишком длинный, обрезаем
+        if len(text) > 4000:
+            text = text[:3900] + "\n\n... (список обрезан)"
+        
+        await callback.message.edit_text(text, reply_markup=keyboard)
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Ошибка в admin_users_stats: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка при загрузке статистики", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("admin_edit_user_balance_"))
+async def admin_edit_user_balance_start(callback: CallbackQuery, state: FSMContext):
+    """Начало редактирования баланса пользователя"""
+    try:
+        user_id = int(callback.data.split("_")[-1])
+        db = get_db()
+        user = db.get_user(user_id)
+        
+        if not user:
+            await callback.answer("❌ Пользователь не найден", show_alert=True)
+            return
+        
+        username = user.get('username', '')
+        first_name = user.get('first_name', 'Без имени')
+        current_balance = float(user.get('balance', 0.0))
+        
+        display_name = first_name
+        if username:
+            display_name += f" (@{username})"
+        else:
+            display_name += f" (ID: {user_id})"
+        
+        await callback.message.edit_text(
+            f"✏️ Изменение баланса пользователя\n\n"
+            f"👤 Пользователь: {display_name}\n"
+            f"💰 Текущий баланс: {current_balance:.0f}R\n\n"
+            f"Отправьте новое значение баланса (только число):",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_users_stats")]
+            ])
+        )
+        
+        await state.update_data(user_id=user_id)
+        await state.set_state(AdminStates.waiting_user_balance)
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Ошибка в admin_edit_user_balance_start: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка при загрузке", show_alert=True)
+
+
+@router.message(AdminStates.waiting_user_balance)
+async def admin_save_user_balance(message: Message, state: FSMContext):
+    """Сохранение баланса пользователя"""
+    try:
+        if message.from_user.id not in ADMINS:
+            await state.clear()
+            return
+        
+        data = await state.get_data()
+        user_id = data.get('user_id')
+        
+        if not user_id:
+            await message.answer("❌ Ошибка: не найден ID пользователя")
+            await state.clear()
+            return
+        
+        try:
+            new_balance = float(message.text.strip())
+            if new_balance < 0:
+                await message.answer("❌ Баланс не может быть отрицательным")
+                return
+        except ValueError:
+            await message.answer("❌ Пожалуйста, отправьте число")
+            return
+        
+        db = get_db()
+        success = db.set_user_balance(user_id, new_balance)
+        
+        if success:
+            user = db.get_user(user_id)
+            username = user.get('username', '') if user else ''
+            first_name = user.get('first_name', 'Без имени') if user else 'Без имени'
+            
+            display_name = first_name
+            if username:
+                display_name += f" (@{username})"
+            else:
+                display_name += f" (ID: {user_id})"
+            
+            await message.answer(
+                f"✅ Баланс пользователя обновлен!\n\n"
+                f"👤 Пользователь: {display_name}\n"
+                f"💰 Новый баланс: {new_balance:.0f}R",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="◀️ Назад к статистике", callback_data="admin_users_stats")]
+                ])
+            )
+        else:
+            await message.answer(
+                "❌ Ошибка при обновлении баланса",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="◀️ Назад к статистике", callback_data="admin_users_stats")]
+                ])
+            )
+        
+        await state.clear()
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении баланса пользователя: {e}", exc_info=True)
+        await message.answer(
+            f"❌ Ошибка при сохранении: {str(e)}",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ Назад к статистике", callback_data="admin_users_stats")]
+            ])
+        )
+        await state.clear()
 

@@ -170,18 +170,82 @@ async def handle_task(callback: CallbackQuery):
     elif task['task_type'] == 'info':
         # Проверяем, получал ли пользователь уже награду за стримы
         if db.is_task_completed(user_id, task_id):
-            # Уже получил награду - просто показываем сообщение
-            text = db.get_setting('streams_message_text', task.get('description', task.get('title', '📖 Узнать, как зарабатывать на просмотре трансляций/стримов')))
-            
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_earn_menu")]
-            ])
-            
-            await callback.answer("Вы уже получили награду за это задание!", show_alert=True)
-            await callback.message.edit_text(text, reply_markup=keyboard)
+            # Уже получил награду - возвращаем в меню заработка
+            from keyboards import get_earn_menu_keyboard
+            keyboard = get_earn_menu_keyboard(user_id)
+            await callback.message.edit_text(
+                "💰 Заработок",
+                reply_markup=keyboard
+            )
+            await callback.answer()
             return
         
-        # Начисляем награду единоразово при нажатии на кнопку
+        # Проверяем подписку на канал @akatsik
+        channel_username = "akatsik"
+        channel_url = f"https://t.me/{channel_username}"
+        is_subscribed = False
+        
+        logger.info(f"Проверка подписки на канал @{channel_username} для пользователя {user_id}")
+        
+        try:
+            member = await callback.bot.get_chat_member(f"@{channel_username}", user_id)
+            logger.info(f"Статус пользователя {user_id} в канале @{channel_username}: {member.status}")
+            if member.status in ['member', 'administrator', 'creator']:
+                is_subscribed = True
+                logger.info(f"Пользователь {user_id} подписан на канал @{channel_username}")
+            else:
+                logger.info(f"Пользователь {user_id} НЕ подписан на канал @{channel_username} (статус: {member.status})")
+        except Exception as e:
+            logger.error(f"Ошибка при проверке подписки на канал @{channel_username}: {e}", exc_info=True)
+            # Если бот не может проверить подписку, показываем сообщение с кнопкой
+            text = db.get_setting('streams_message_text', task.get('description', task.get('title', '📖 Узнать, как зарабатывать на просмотре трансляций/стримов')))
+            
+            buttons = [
+                [InlineKeyboardButton(
+                    text="📢 Подписаться на канал",
+                    url=channel_url
+                )],
+                [InlineKeyboardButton(
+                    text="✅ Я подписался, проверить",
+                    callback_data=f"check_streams_subscribe_{task_id}"
+                )],
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_earn_menu")]
+            ]
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+            await callback.message.edit_text(
+                text,
+                reply_markup=keyboard
+            )
+            await callback.answer()
+            return
+        
+        if not is_subscribed:
+            # Пользователь не подписан - показываем сообщение с кнопкой подписки
+            logger.info(f"Пользователь {user_id} не подписан на канал @{channel_username}, показываем кнопки подписки")
+            text = db.get_setting('streams_message_text', task.get('description', task.get('title', '📖 Узнать, как зарабатывать на просмотре трансляций/стримов')))
+            
+            buttons = [
+                [InlineKeyboardButton(
+                    text="📢 Подписаться на канал",
+                    url=channel_url
+                )],
+                [InlineKeyboardButton(
+                    text="✅ Я подписался, проверить",
+                    callback_data=f"check_streams_subscribe_{task_id}"
+                )],
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_earn_menu")]
+            ]
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+            await callback.message.edit_text(
+                text,
+                reply_markup=keyboard
+            )
+            await callback.answer("❌ Сначала подпишитесь на канал!", show_alert=True)
+            return
+        
+        # Пользователь подписан - начисляем награду ОДИН РАЗ
         # Используем награду из задания, если есть, иначе из конфига
         reward_amount = float(task.get('reward', STREAM_INFO_REWARD))
         
@@ -208,7 +272,7 @@ async def handle_task(callback: CallbackQuery):
                     db.update_user_balance(referrer['referrer_id'], friend_referral_reward)
         
         db.update_user_balance(user_id, reward_amount)
-        db.complete_task(user_id, task_id)
+        db.complete_task(user_id, task_id)  # Помечаем задание как выполненное
         
         # Получаем обновленный баланс
         user = db.get_user(user_id)
@@ -627,13 +691,16 @@ async def process_usdt_withdraw(message: Message, state: FSMContext):
         except:
             pass
     
+    # Получаем текст успешного вывода USDT из настроек
+    success_text = db.get_setting('withdraw_usdt_success_text', 
+        '✅ Заявка на вывод создана! Проверка качества приглашенных Вами рефералов займет от 1 до 7 рабочих дней. Также вы можете воспользоваться другим способом вывода. Он сразу поступит Вам на баланс.')
+    
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="◀️ Назад в профиль", callback_data="back_to_profile")]
     ])
     
     await message.answer(
-        f"✅ Заявка на вывод создана!\n\n"
-        f"⏳ Ожидайте исполнения заявки.",
+        success_text,
         reply_markup=keyboard
     )
     
@@ -897,6 +964,160 @@ async def check_subscribe_channels(callback: CallbackQuery):
             await callback.answer("Подпишитесь на каналы для получения награды", show_alert=True)
     
     await callback.message.edit_text(message_text, reply_markup=keyboard)
+
+
+@router.callback_query(F.data.startswith("check_streams_subscribe_"))
+async def check_streams_subscribe(callback: CallbackQuery):
+    """Проверка подписки на канал @akatsik для задания 'просмотр стрима'"""
+    user_id = callback.from_user.id
+    task_id = int(callback.data.split("_")[-1])
+    
+    # Получаем задание
+    task = None
+    tasks = db.get_tasks()
+    for t in tasks:
+        if t['task_id'] == task_id:
+            task = t
+            break
+    
+    if not task:
+        await callback.answer("Задание не найдено!", show_alert=True)
+        return
+    
+    # Проверяем, получал ли пользователь уже награду
+    if db.is_task_completed(user_id, task_id):
+        # Уже получил награду - возвращаем в меню заработка
+        from keyboards import get_earn_menu_keyboard
+        keyboard = get_earn_menu_keyboard(user_id)
+        await callback.message.edit_text(
+            "💰 Заработок",
+            reply_markup=keyboard
+        )
+        await callback.answer()
+        return
+    
+    # Проверяем подписку на канал @akatsik
+    channel_username = "akatsik"
+    channel_url = f"https://t.me/{channel_username}"
+    is_subscribed = False
+    
+    logger.info(f"Проверка подписки на канал @{channel_username} для пользователя {user_id} (обработчик check_streams_subscribe)")
+    
+    try:
+        member = await callback.bot.get_chat_member(f"@{channel_username}", user_id)
+        logger.info(f"Статус пользователя {user_id} в канале @{channel_username}: {member.status}")
+        if member.status in ['member', 'administrator', 'creator']:
+            is_subscribed = True
+            logger.info(f"Пользователь {user_id} подписан на канал @{channel_username}")
+        else:
+            logger.info(f"Пользователь {user_id} НЕ подписан на канал @{channel_username} (статус: {member.status})")
+    except Exception as e:
+        logger.error(f"Ошибка при проверке подписки на канал @{channel_username}: {e}", exc_info=True)
+        error_msg = str(e).lower()
+        
+        if "member list is inaccessible" in error_msg:
+            await callback.answer(
+                f"Ошибка: Бот не может проверить подписку на канал @{channel_username}.\n"
+                f"Убедитесь, что бот добавлен в канал как администратор с правами на просмотр участников.",
+                show_alert=True
+            )
+        elif "chat not found" in error_msg or "bot is not a member" in error_msg:
+            await callback.answer(
+                f"Ошибка: Бот не добавлен в канал @{channel_username} как администратор!",
+                show_alert=True
+            )
+        else:
+            await callback.answer("Ошибка при проверке подписки. Попробуйте позже.", show_alert=True)
+        
+        # Показываем сообщение с кнопкой подписки
+        text = db.get_setting('streams_message_text', task.get('description', task.get('title', '📖 Узнать, как зарабатывать на просмотре трансляций/стримов')))
+        
+        buttons = [
+            [InlineKeyboardButton(
+                text="📢 Подписаться на канал",
+                url=channel_url
+            )],
+            [InlineKeyboardButton(
+                text="✅ Я подписался, проверить",
+                callback_data=f"check_streams_subscribe_{task_id}"
+            )],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_earn_menu")]
+        ]
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        await callback.message.edit_text(
+            text,
+            reply_markup=keyboard
+        )
+        return
+    
+    if not is_subscribed:
+        # Пользователь не подписан
+        logger.info(f"Пользователь {user_id} не подписан на канал @{channel_username}, показываем кнопки подписки")
+        text = db.get_setting('streams_message_text', task.get('description', task.get('title', '📖 Узнать, как зарабатывать на просмотре трансляций/стримов')))
+        
+        buttons = [
+            [InlineKeyboardButton(
+                text="📢 Подписаться на канал",
+                url=channel_url
+            )],
+            [InlineKeyboardButton(
+                text="✅ Я подписался, проверить",
+                callback_data=f"check_streams_subscribe_{task_id}"
+            )],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_earn_menu")]
+        ]
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        await callback.message.edit_text(
+            text,
+            reply_markup=keyboard
+        )
+        await callback.answer("❌ Сначала подпишитесь на канал!", show_alert=True)
+        return
+    
+    # Пользователь подписан - начисляем награду
+    reward_amount = float(task.get('reward', STREAM_INFO_REWARD))
+    
+    # Проверяем реферала перед выполнением задания
+    referral_reward = float(db.get_setting('referral_reward', '350'))
+    friend_referral_reward = float(db.get_setting('friend_referral_reward', '100'))
+    
+    user = db.get_user(user_id)
+    if user and user.get('referrer_id'):
+        cursor = db.conn.cursor()
+        # Проверяем, есть ли уже выполненные задания (кроме текущего)
+        cursor.execute(
+            "SELECT COUNT(*) as count FROM completed_tasks WHERE user_id = ? AND task_id != ?",
+            (user_id, task_id)
+        )
+        completed_before = cursor.fetchone()['count']
+        
+        # Начисляем за реферала только если это первое выполненное задание
+        if completed_before == 0:
+            db.update_user_balance(user['referrer_id'], referral_reward)
+            referrer = db.get_user(user['referrer_id'])
+            if referrer and referrer.get('referrer_id'):
+                db.update_user_balance(referrer['referrer_id'], friend_referral_reward)
+    
+    db.update_user_balance(user_id, reward_amount)
+    db.complete_task(user_id, task_id)  # Помечаем задание как выполненное - награда только один раз
+    
+    # Получаем обновленный баланс
+    user = db.get_user(user_id)
+    
+    # Используем настройку из БД для текста сообщения
+    text = db.get_setting('streams_message_text', task.get('description', task.get('title', '📖 Узнать, как зарабатывать на просмотре трансляций/стримов')))
+    
+    # Добавляем информацию о начислении
+    text_with_reward = f"{text}\n\n✅ Начислено: {int(reward_amount)}R\n💰 Ваш баланс: {user['balance']:.2f}R"
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_earn_menu")]
+    ])
+    
+    await callback.answer(f"✅ Начислено {int(reward_amount)}R!", show_alert=True)
+    await callback.message.edit_text(text_with_reward, reply_markup=keyboard)
 
 
 @router.callback_query(F.data == "back_to_main_menu")

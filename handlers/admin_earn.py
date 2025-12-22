@@ -501,9 +501,13 @@ async def admin_save_streams_button(message: Message, state: FSMContext):
 @router.callback_query(F.data == "admin_edit_streams_message")
 async def admin_edit_streams_message(callback: CallbackQuery, state: FSMContext):
     """Редактирование текста сообщения стримов"""
+    db = get_db()
+    current_text = db.get_setting('streams_message_text', '📖 Узнать, как зарабатывать на просмотре трансляций/стримов')
+    
     await callback.message.edit_text(
         "✏️ Изменение текста сообщения стримов\n\n"
-        "Отправьте новый текст:",
+        f"Текущий текст:\n{current_text}\n\n"
+        "Отправьте новый текст (можете включить информацию о подписке на канал @akatsik):",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_streams_settings")]
         ])
