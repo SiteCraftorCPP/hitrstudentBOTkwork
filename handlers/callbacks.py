@@ -168,18 +168,7 @@ async def handle_task(callback: CallbackQuery):
         return
     
     elif task['task_type'] == 'info':
-        # Проверяем, получал ли пользователь уже награду за стримы
-        if db.is_task_completed(user_id, task_id):
-            # Уже получил награду - возвращаем в меню заработка
-            from keyboards import get_earn_menu_keyboard
-            keyboard = get_earn_menu_keyboard(user_id)
-            await callback.message.edit_text(
-                "💰 Заработок",
-                reply_markup=keyboard
-            )
-            await callback.answer()
-            return
-        
+        # Задание всегда доступно, но награда начисляется только один раз
         # Проверяем подписку на канал @akatsik
         channel_username = "akatsik"
         channel_url = f"https://t.me/{channel_username}"
@@ -245,7 +234,29 @@ async def handle_task(callback: CallbackQuery):
             await callback.answer("❌ Сначала подпишитесь на канал!", show_alert=True)
             return
         
-        # Пользователь подписан - начисляем награду ОДИН РАЗ
+        # Пользователь подписан - проверяем, получал ли он уже награду
+        if db.is_task_completed(user_id, task_id):
+            # Уже получил награду - показываем текст с кнопками, но без начисления
+            text = db.get_setting('streams_message_text', task.get('description', task.get('title', '📖 Узнать, как зарабатывать на просмотре трансляций/стримов')))
+            
+            buttons = [
+                [InlineKeyboardButton(
+                    text="📢 Подписаться на канал",
+                    url=channel_url
+                )],
+                [InlineKeyboardButton(
+                    text="✅ Я подписался, проверить",
+                    callback_data=f"check_streams_subscribe_{task_id}"
+                )],
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_earn_menu")]
+            ]
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+            await callback.message.edit_text(text, reply_markup=keyboard)
+            await callback.answer()
+            return
+        
+        # Пользователь подписан и еще не получал награду - начисляем награду ОДИН РАЗ
         # Используем награду из задания, если есть, иначе из конфига
         reward_amount = float(task.get('reward', STREAM_INFO_REWARD))
         
@@ -283,9 +294,19 @@ async def handle_task(callback: CallbackQuery):
         # Добавляем информацию о начислении
         text_with_reward = f"{text}\n\n✅ Начислено: {int(reward_amount)}R\n💰 Ваш баланс: {user['balance']:.2f}R"
         
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        buttons = [
+            [InlineKeyboardButton(
+                text="📢 Подписаться на канал",
+                url=channel_url
+            )],
+            [InlineKeyboardButton(
+                text="✅ Я подписался, проверить",
+                callback_data=f"check_streams_subscribe_{task_id}"
+            )],
             [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_earn_menu")]
-        ])
+        ]
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
         
         await callback.answer(f"✅ Начислено {int(reward_amount)}R!", show_alert=True)
         await callback.message.edit_text(text_with_reward, reply_markup=keyboard)
@@ -984,17 +1005,7 @@ async def check_streams_subscribe(callback: CallbackQuery):
         await callback.answer("Задание не найдено!", show_alert=True)
         return
     
-    # Проверяем, получал ли пользователь уже награду
-    if db.is_task_completed(user_id, task_id):
-        # Уже получил награду - возвращаем в меню заработка
-        from keyboards import get_earn_menu_keyboard
-        keyboard = get_earn_menu_keyboard(user_id)
-        await callback.message.edit_text(
-            "💰 Заработок",
-            reply_markup=keyboard
-        )
-        await callback.answer()
-        return
+    # Кнопки всегда доступны, но награда начисляется только один раз
     
     # Проверяем подписку на канал @akatsik
     channel_username = "akatsik"
@@ -1076,7 +1087,29 @@ async def check_streams_subscribe(callback: CallbackQuery):
         await callback.answer("❌ Сначала подпишитесь на канал!", show_alert=True)
         return
     
-    # Пользователь подписан - начисляем награду
+    # Пользователь подписан - проверяем, получал ли он уже награду
+    if db.is_task_completed(user_id, task_id):
+        # Уже получил награду - показываем текст с кнопками, но без начисления
+        text = db.get_setting('streams_message_text', task.get('description', task.get('title', '📖 Узнать, как зарабатывать на просмотре трансляций/стримов')))
+        
+        buttons = [
+            [InlineKeyboardButton(
+                text="📢 Подписаться на канал",
+                url=channel_url
+            )],
+            [InlineKeyboardButton(
+                text="✅ Я подписался, проверить",
+                callback_data=f"check_streams_subscribe_{task_id}"
+            )],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_earn_menu")]
+        ]
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        await callback.message.edit_text(text, reply_markup=keyboard)
+        await callback.answer()
+        return
+    
+    # Пользователь подписан и еще не получал награду - начисляем награду ОДИН РАЗ
     reward_amount = float(task.get('reward', STREAM_INFO_REWARD))
     
     # Проверяем реферала перед выполнением задания
@@ -1112,9 +1145,19 @@ async def check_streams_subscribe(callback: CallbackQuery):
     # Добавляем информацию о начислении
     text_with_reward = f"{text}\n\n✅ Начислено: {int(reward_amount)}R\n💰 Ваш баланс: {user['balance']:.2f}R"
     
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    buttons = [
+        [InlineKeyboardButton(
+            text="📢 Подписаться на канал",
+            url=channel_url
+        )],
+        [InlineKeyboardButton(
+            text="✅ Я подписался, проверить",
+            callback_data=f"check_streams_subscribe_{task_id}"
+        )],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_earn_menu")]
-    ])
+    ]
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
     
     await callback.answer(f"✅ Начислено {int(reward_amount)}R!", show_alert=True)
     await callback.message.edit_text(text_with_reward, reply_markup=keyboard)
