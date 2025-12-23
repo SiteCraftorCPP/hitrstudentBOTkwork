@@ -44,7 +44,7 @@ def get_withdraw_keyboard(balance: float = 0.0):
 
 def get_withdraw_methods_keyboard():
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="-", callback_data="withdraw_site")],
+        [InlineKeyboardButton(text="Другой способ", callback_data="withdraw_site")],
         [InlineKeyboardButton(text="💎 USDT (BEP20)", callback_data="withdraw_usdt")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_withdraw_start")]
     ])
