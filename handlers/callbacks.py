@@ -231,7 +231,8 @@ async def handle_task(callback: CallbackQuery):
                 text,
                 reply_markup=keyboard
             )
-            await callback.answer("❌ Сначала подпишитесь на канал!", show_alert=True)
+            # Убираем навязчивое предупреждение — просто обновляем текст и кнопки
+            await callback.answer()
             return
         
         # Пользователь подписан - проверяем, получал ли он уже награду
