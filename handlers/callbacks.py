@@ -1085,7 +1085,8 @@ async def check_streams_subscribe(callback: CallbackQuery):
             text,
             reply_markup=keyboard
         )
-        await callback.answer("❌ Сначала подпишитесь на канал!", show_alert=True)
+        # Не показываем алерт — просто обновляем текст и кнопки
+        await callback.answer()
         return
     
     # Пользователь подписан - проверяем, получал ли он уже награду
